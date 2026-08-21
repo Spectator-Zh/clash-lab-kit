@@ -93,6 +93,15 @@ curl -I https://www.google.com
 
 后续新增功能会按日期记录在这里，最新内容置顶。
 
+### 2026-08-21：修复用户级自动启动
+
+- 修复 systemd 用户服务在非交互式 Shell 中找不到 `clash`、导致
+  `clash autostart on` 启用成功但服务启动失败的问题。
+- 自动启动仍使用完整的 `clash on` 流程，会检测端口占用并自动分配空闲端口；
+  同一用户打开多个终端不会重复启动 Mihomo。
+- 使用 `clash autostart on|off|status` 开启、关闭或查看登录后自动启动。
+  端口变化后，已打开的终端执行 `clash proxy reload` 即可刷新代理环境。
+
 ### 2026-08-20：受限节点清理
 
 - `clash hkkill`：删除名称包含 `香港` 或 `hongkong`（忽略大小写）的节点。

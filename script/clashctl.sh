@@ -91,8 +91,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -lc 'MIHOMO_SYSTEMD_RUN=1 clash on'
-ExecStop=/bin/bash -lc 'MIHOMO_SYSTEMD_RUN=1 clash off'
+ExecStart=/bin/bash -c 'source "%h/tools/mihomo/script/common.sh" && source "%h/tools/mihomo/script/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash on'
+ExecStop=/bin/bash -c 'source "%h/tools/mihomo/script/common.sh" && source "%h/tools/mihomo/script/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash off'
 TimeoutStartSec=60
 TimeoutStopSec=30
 
