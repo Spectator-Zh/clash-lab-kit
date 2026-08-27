@@ -3,7 +3,7 @@
 ![GitHub License](https://img.shields.io/github/license/Spectator-Zh/clash-lab-kit)
 ![GitHub top language](https://img.shields.io/github/languages/top/Spectator-Zh/clash-lab-kit)
 
-开箱即用的 Linux 命令行 Mihomo 工具包，面向实验室和多用户服务器环境。
+开箱即用的 Linux 命令行 Mihomo 工具包，**面向实验室多用户服务器环境和端侧设备**。
 无需 root 权限即可完成安装、端口避让、节点管理与 Web 控制，解决旧内核不兼容
 AnyTLS 等新协议，以及纯命令行环境中配置和维护代理较繁琐的问题。
 
