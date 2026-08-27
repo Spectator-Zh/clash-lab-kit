@@ -26,6 +26,7 @@ Forked from [SaladDay/clash-for-lab](https://github.com/SaladDay/clash-for-lab).
 - [快速开始](#快速开始)
   - [环境要求](#环境要求)
   - [安装步骤](#安装步骤)
+  - [校验 Release 安装包](#校验-release-安装包)
   - [验证安装](#验证安装)
 - [最近更新](#最近更新)
   - [2026-08-27：双架构与订阅兼容性](#2026-08-27双架构与订阅兼容性)
@@ -98,6 +99,25 @@ bash install.sh 'https://your-subscription-url'
 `~/tools/mihomo/` 并自动启动。仓库根目录的
 `config.yaml`、订阅地址、运行配置和缓存文件均被 Git 忽略，不会被提交。
 
+### 校验 Release 安装包
+
+每个 Release 安装包都配有一个同名的 `.sha256` 文件。只需下载当前架构的
+安装包及其校验文件，然后执行标准校验命令，不需要添加 `--ignore-missing`。
+
+AMD64：
+
+```bash
+sha256sum -c clash-lab-kit-v1.1-linux-amd64-full.tar.gz.sha256
+```
+
+ARM64 / NVIDIA Jetson Orin：
+
+```bash
+sha256sum -c clash-lab-kit-v1.1-linux-arm64-full.tar.gz.sha256
+```
+
+输出文件名后跟 `OK` 表示校验通过；如果显示 `FAILED`，请重新下载安装包。
+
 ### 验证安装
 
 ```bash
@@ -129,6 +149,8 @@ curl -I https://www.google.com
 - 安装预检和运行阶段失败都会返回非零退出码，便于 SSH 与自动化脚本可靠判断结果。
 - WSL2 中若 Windows 主机端口经 localhost 转发到 Linux、但未显示在 Linux
   `ss`/`netstat` 中，安装器也能识别冲突并自动避让。
+- Release 为每个架构的安装包分别提供同名 `.sha256`，只下载当前架构时也能
+  直接使用 `sha256sum -c 文件名.sha256` 完成校验。
 
 ### 2026-08-21：修复用户级自动启动
 
