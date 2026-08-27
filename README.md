@@ -114,15 +114,19 @@ curl -I https://www.google.com
 
 ### 2026-08-27：双架构与订阅兼容性
 
+- **NVIDIA Jetson Orin 支持**：新增 Linux aarch64/ARM64 完整资源与安装流程，
+  已在 NVIDIA Jetson Orin 的 **Ubuntu 20.04.6 LTS**（`5.10.216-tegra`）上完成
+  从零安装、订阅更新、systemd、端口避让、代理出站和错误架构拒绝等实机验收。
+- **订阅 UA 更新与兼容性增强**：订阅请求的 User-Agent 已由
+  `clash-verge/v2.0.4` 更新为 `clash-verge/v2.5.2`，**增加对部分根据客户端 UA
+  分流的订阅链接的支持**；下载仍保留直连、当前代理和 wget 回退链路。
 - 安装器会按宿主机架构精确选择 Mihomo、yq 和 subconverter，不再使用可能
   混入其他架构资源的通配符。
 - ARM64 内置 Mihomo v1.19.25、yq v4.45.1 和 subconverter v0.9.0；
-  NVIDIA Jetson Orin 的 `aarch64` Ubuntu 系统可以直接运行 `bash install.sh`。
+  AMD64 与 ARM64 使用相同的组件版本。
 - 发布安装目录前会校验全部压缩资源的 SHA256，并检查三个可执行文件的
   ELF 架构；资源损坏或架构不匹配时安装会失败并清理暂存目录。
 - 安装预检和运行阶段失败都会返回非零退出码，便于 SSH 与自动化脚本可靠判断结果。
-- 订阅请求的 User-Agent 已更新为 `clash-verge/v2.5.2`，兼容会按客户端版本
-  分流的订阅服务；下载仍保留直连、当前代理和 wget 回退链路。
 - WSL2 中若 Windows 主机端口经 localhost 转发到 Linux、但未显示在 Linux
   `ss`/`netstat` 中，安装器也能识别冲突并自动避让。
 
