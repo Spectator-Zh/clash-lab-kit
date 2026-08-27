@@ -28,6 +28,7 @@ Forked from [SaladDay/clash-for-lab](https://github.com/SaladDay/clash-for-lab).
   - [安装步骤](#安装步骤)
   - [验证安装](#验证安装)
 - [最近更新](#最近更新)
+  - [2026-08-27：双架构与订阅兼容性](#2026-08-27双架构与订阅兼容性)
   - [2026-08-21：修复用户级自动启动](#2026-08-21修复用户级自动启动)
   - [2026-08-20：受限节点清理](#2026-08-20受限节点清理)
 - [使用教程](#使用教程)
@@ -43,6 +44,7 @@ Forked from [SaladDay/clash-for-lab](https://github.com/SaladDay/clash-for-lab).
 ### 环境要求
 
 - **用户权限**：普通用户权限即可，**无需 sudo 或 root**
+- **系统架构**：Linux x86_64/AMD64、Linux aarch64/ARM64（包括 NVIDIA Jetson Orin）
 - **Shell 支持**：`bash`、`zsh`
 - **配置来源**：需要有效的 Clash/Mihomo `config.yaml` 或订阅链接
 
@@ -109,6 +111,20 @@ curl -I https://www.google.com
 ## 最近更新
 
 后续新增功能会按日期记录在这里，最新内容置顶。
+
+### 2026-08-27：双架构与订阅兼容性
+
+- 安装器会按宿主机架构精确选择 Mihomo、yq 和 subconverter，不再使用可能
+  混入其他架构资源的通配符。
+- ARM64 内置 Mihomo v1.19.25、yq v4.45.1 和 subconverter v0.9.0；
+  NVIDIA Jetson Orin 的 `aarch64` Ubuntu 系统可以直接运行 `bash install.sh`。
+- 发布安装目录前会校验全部压缩资源的 SHA256，并检查三个可执行文件的
+  ELF 架构；资源损坏或架构不匹配时安装会失败并清理暂存目录。
+- 安装预检和运行阶段失败都会返回非零退出码，便于 SSH 与自动化脚本可靠判断结果。
+- 订阅请求的 User-Agent 已更新为 `clash-verge/v2.5.2`，兼容会按客户端版本
+  分流的订阅服务；下载仍保留直连、当前代理和 wget 回退链路。
+- WSL2 中若 Windows 主机端口经 localhost 转发到 Linux、但未显示在 Linux
+  `ss`/`netstat` 中，安装器也能识别冲突并自动避让。
 
 ### 2026-08-21：修复用户级自动启动
 
@@ -325,8 +341,8 @@ clash mihomo update
 # 更新到指定版本
 clash mihomo update v1.19.25
 
-# 使用自定义下载地址更新
-clash mihomo update --url https://github.com/MetaCubeX/mihomo/releases/download/v1.19.25/mihomo-linux-amd64-compatible-v1.19.25.gz
+# 使用自定义下载地址更新（ARM64 示例；URL 必须与当前 CPU 架构匹配）
+clash mihomo update --url https://github.com/MetaCubeX/mihomo/releases/download/v1.19.25/mihomo-linux-arm64-v1.19.25.gz
 ```
 
 #### 3.9 高级配置
@@ -365,7 +381,7 @@ clash-lab-kit/
 ├── resources/              # 资源文件
 │   ├── mixin.yaml          # Mixin 配置模板
 │   ├── Country.mmdb        # GeoIP 数据库
-│   └── zip/                # 预下载资源压缩包
+│   └── zip/                # AMD64/ARM64 预下载资源压缩包
 └── README.md               # 项目文档
 ```
 
@@ -412,6 +428,7 @@ A: 使用 `clash subscribe new-url` 命令更换，系统会自动更新配置�
 ### Q: 可以只升级内核，不动其他配置吗？
 
 A: 可以。执行 `clash mihomo update` 即可只替换 `~/tools/mihomo/bin/mihomo`，保留现有配置、订阅和运行目录结构。
+更新器会自动选择当前架构；传入 `--url` 时也会在替换前拒绝错误架构的内核。
 
 ### Q: Web 控制台无法访问怎么办？
 

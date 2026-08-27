@@ -87,6 +87,7 @@ mkdir -m 700 "$INSTALL_STAGE" || exit 1
 _use_install_base "$INSTALL_STAGE"
 
 _get_kernel
+_validate_install_resources || _error_quit "当前安装包的 ${MIHOMO_RESOURCE_ARCH} 资源不完整或已损坏"
 mkdir -p "$MIHOMO_BASE_DIR"/{bin,config,logs} || exit 1
 
 if ! gzip -dc "$ZIP_KERNEL" > "${MIHOMO_BASE_DIR}/bin/$BIN_KERNEL_NAME"; then
@@ -108,6 +109,12 @@ for yq_file in "${MIHOMO_BASE_DIR}/bin"/yq_*; do
 done
 chmod +x "${MIHOMO_BASE_DIR}/bin/yq"
 _set_bin
+
+chmod +x "$BIN_SUBCONVERTER" 2>/dev/null || true
+_validate_host_binary "$BIN_KERNEL" || _error_quit "mihomo 内核与当前系统架构不匹配"
+_validate_host_binary "$BIN_YQ" || _error_quit "yq 与当前系统架构不匹配"
+_validate_host_binary "$BIN_SUBCONVERTER" || _error_quit "subconverter 与当前系统架构不匹配"
+_okcat '✅' "二进制架构校验通过：${MIHOMO_HOST_ARCH} (${MIHOMO_RESOURCE_ARCH})"
 
 cp -rf "$SCRIPT_BASE_DIR" "$MIHOMO_BASE_DIR/" || exit 1
 cp "$RESOURCES_BASE_DIR"/*.yaml "$MIHOMO_BASE_DIR/" 2>/dev/null || true

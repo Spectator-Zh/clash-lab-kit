@@ -19,13 +19,42 @@ RESOURCES_CONFIG="${RESOURCES_BASE_DIR}/config.yaml"
 RESOURCES_CONFIG_MIXIN="${RESOURCES_BASE_DIR}/mixin.yaml"
 
 ZIP_BASE_DIR="${RESOURCES_BASE_DIR}/zip"
-ZIP_CLASH=$(echo ${ZIP_BASE_DIR}/clash*)
-ZIP_MIHOMO=$(echo ${ZIP_BASE_DIR}/mihomo*)
-ZIP_YQ=$(echo ${ZIP_BASE_DIR}/yq*)
-ZIP_SUBCONVERTER=$(echo ${ZIP_BASE_DIR}/subconverter*)
-
 ZIP_UI="${ZIP_BASE_DIR}/zashboard.zip"
-ZIP_CLASHCTL=$(echo ${ZIP_BASE_DIR}/clashctl*)
+
+# Select only resources built for the current host. Globbing here is unsafe:
+# once more than one architecture is bundled, a glob expands to multiple paths
+# and can also cause an AMD64 executable to be installed on ARM64.
+MIHOMO_HOST_ARCH=$(uname -m 2>/dev/null || true)
+case "$MIHOMO_HOST_ARCH" in
+x86_64 | amd64)
+    MIHOMO_RESOURCE_ARCH=amd64
+    MIHOMO_ELF_MACHINE=3e00
+    ZIP_MIHOMO="${ZIP_BASE_DIR}/mihomo-linux-amd64-compatible-v1.19.25.gz"
+    ZIP_YQ="${ZIP_BASE_DIR}/yq_linux_amd64.tar.gz"
+    ZIP_SUBCONVERTER="${ZIP_BASE_DIR}/subconverter_linux64.tar.gz"
+    SHA256_MIHOMO='8d14bf2edbf2911db004abaed12754d63041eaf87e565af6f1e589883cd93ec8'
+    SHA256_YQ='290b22a62d0bd3590741557eb6391707a519893d81be975637bc13443140e057'
+    SHA256_SUBCONVERTER='884a6d1168267eba076fcdd5171215bacf98c17948ab526e4cbbdcad5f7a0217'
+    ;;
+aarch64 | arm64)
+    MIHOMO_RESOURCE_ARCH=arm64
+    MIHOMO_ELF_MACHINE=b700
+    ZIP_MIHOMO="${ZIP_BASE_DIR}/mihomo-linux-arm64-v1.19.25.gz"
+    ZIP_YQ="${ZIP_BASE_DIR}/yq_linux_arm64.tar.gz"
+    ZIP_SUBCONVERTER="${ZIP_BASE_DIR}/subconverter_aarch64.tar.gz"
+    SHA256_MIHOMO='0d2f19c4bf30121feff4ca51a1a5ddd7837ee1f9faaf930ca83533bca51e8b34'
+    SHA256_YQ='d49a2cf12a4130a08b6fcbe09163ba3dfdbf6db9ce6b0336d6606ee44505c43d'
+    SHA256_SUBCONVERTER='0914688a0af211360271a4eef8a731f09852b47edf094d3758070b660544659e'
+    ;;
+*)
+    MIHOMO_RESOURCE_ARCH=
+    MIHOMO_ELF_MACHINE=
+    ZIP_MIHOMO=
+    ZIP_YQ=
+    ZIP_SUBCONVERTER=
+    ;;
+esac
+SHA256_UI='4f5c8529621e9eda3b4fd6739ced8b9e0430ff776abdda1ea7ea87f1d55a5ae2'
 
 MIHOMO_BASE_DIR="$HOME/tools/mihomo"
 MIHOMO_SCRIPT_DIR="${MIHOMO_BASE_DIR}/$(basename $SCRIPT_BASE_DIR)"
@@ -228,6 +257,50 @@ function _get_kernel() {
     _okcat "安装内核：$BIN_KERNEL_NAME"
 }
 
+_verify_resource_checksum() {
+    local file=$1
+    local expected=$2
+    local actual
+
+    [ -f "$file" ] || {
+        _failcat "缺少 ${MIHOMO_RESOURCE_ARCH} 安装资源：$file"
+        return 1
+    }
+    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+    [ "$actual" = "$expected" ] || {
+        _failcat "安装资源校验失败：$file"
+        return 1
+    }
+}
+
+_validate_install_resources() {
+    _verify_resource_checksum "$ZIP_MIHOMO" "$SHA256_MIHOMO" &&
+        _verify_resource_checksum "$ZIP_YQ" "$SHA256_YQ" &&
+        _verify_resource_checksum "$ZIP_SUBCONVERTER" "$SHA256_SUBCONVERTER" &&
+        _verify_resource_checksum "$ZIP_UI" "$SHA256_UI"
+}
+
+_elf_machine_bytes() {
+    local file=$1
+    local magic
+    magic=$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d '[:space:]')
+    [ "$magic" = '7f454c46' ] || return 1
+    od -An -tx1 -j18 -N2 "$file" 2>/dev/null | tr -d '[:space:]'
+}
+
+_validate_host_binary() {
+    local file=$1
+    local machine
+    machine=$(_elf_machine_bytes "$file") || {
+        _failcat "不是有效的 ELF 可执行文件：$file"
+        return 1
+    }
+    [ "$machine" = "$MIHOMO_ELF_MACHINE" ] || {
+        _failcat "二进制架构与宿主机不匹配：$file（宿主机：$MIHOMO_HOST_ARCH）"
+        return 1
+    }
+}
+
 _get_random_port() {
     local randomPort
     # Try shuf first (Linux), then use alternative methods
@@ -371,20 +444,33 @@ function _error_quit() {
         local msg="${emoji} $1"
         _get_color_msg "$color" "$msg"
     }
-    [ -z "$_SHELL" ] && _SHELL=bash
-
-    # Install transactions must return through EXIT so their cleanup trap can
-    # remove staging files. Replacing the process with a shell would skip it.
-    if [ "${INSTALL_TRANSACTION_ACTIVE:-0}" != "1" ] && _has_tty; then
-        exec "$_SHELL" -i
-    fi
-
+    # Always preserve failure semantics for scripts and callers. Starting a new
+    # interactive shell here used to turn preflight failures into exit status 0
+    # and made remote/automated installation results unreliable.
     exit 1
 }
 
 _is_bind() {
     local port=$1
-    { ss -lnptu || netstat -lnptu; } 2>/dev/null | grep ":${port}\b"
+    local listeners
+
+    listeners=$({ ss -lnptu || netstat -lnptu; } 2>/dev/null | grep ":${port}\b")
+    if [ -n "$listeners" ]; then
+        printf '%s\n' "$listeners"
+        return 0
+    fi
+
+    # WSL2 can forward Windows-host listeners into Linux localhost without
+    # exposing them through Linux ss/netstat. Probe TCP localhost as a fallback
+    # so ports such as the external-controller are still avoided correctly.
+    [[ $port =~ ^[0-9]+$ ]] || return 1
+    if command -v timeout >/dev/null 2>&1 &&
+        timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+        printf 'tcp-connect 127.0.0.1:%s\n' "$port"
+        return 0
+    fi
+
+    return 1
 }
 
 _is_already_in_use() {
@@ -396,9 +482,17 @@ _is_already_in_use() {
 # Removed _is_root function - not needed in userspace
 
 function _valid_env() {
-    # 用户空间运行，不需要root权限检查
+    # 用户空间运行，不需要 root 权限检查。
     if [ -z "$ZSH_VERSION" ] && [ -z "$BASH_VERSION" ]; then
         _failcat "仅支持：bash、zsh (例如: bash install.sh)"
+        return 1
+    fi
+    if [ "$(uname -s 2>/dev/null)" != Linux ]; then
+        _failcat "仅支持 Linux"
+        return 1
+    fi
+    if [ -z "$MIHOMO_RESOURCE_ARCH" ]; then
+        _failcat "不支持的 CPU 架构：${MIHOMO_HOST_ARCH:-unknown}；当前仅支持 x86_64 和 aarch64"
         return 1
     fi
     return 0
@@ -627,6 +721,11 @@ _replace_installed_mihomo() {
         _failcat "mihomo 内核解压失败"
         return 1
     }
+    _validate_host_binary "$staged_bin" || {
+        rm -f "$staged_bin"
+        _failcat "mihomo 新内核架构校验失败"
+        return 1
+    }
     "$staged_bin" -v >/dev/null 2>&1 || {
         rm -f "$staged_bin"
         _failcat "mihomo 新内核校验失败"
@@ -651,7 +750,7 @@ _replace_installed_mihomo() {
 _download_raw_config() {
     local dest=$1
     local url=$2
-    local agent='clash-verge/v2.0.4'
+    local agent='clash-verge/v2.5.2'
     local tmp
     tmp=$(mktemp 2>/dev/null) || tmp="${dest}.tmp.$$"
 
