@@ -7,7 +7,8 @@ system-proxy:
 mode: rule
 
 # Web 控制台配置
-external-controller: "0.0.0.0:9090"
+# 默认仅允许本机访问；远程管理请使用 SSH 端口转发。
+external-controller: "127.0.0.1:9090"
 external-ui: ui
 secret:
 

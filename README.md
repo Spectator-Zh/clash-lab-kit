@@ -29,6 +29,8 @@ Forked from [SaladDay/clash-for-lab](https://github.com/SaladDay/clash-for-lab).
   - [校验 Release 安装包](#校验-release-安装包)
   - [验证安装](#验证安装)
 - [最近更新](#最近更新)
+  - [2026-09-01：v1.2.0 程序版本与当前终端自动刷新](#2026-09-01v120-程序版本与当前终端自动刷新)
+  - [2026-08-29：安全默认值与更新可靠性](#2026-08-29安全默认值与更新可靠性)
   - [2026-08-27：双架构与订阅兼容性](#2026-08-27双架构与订阅兼容性)
   - [2026-08-21：修复用户级自动启动](#2026-08-21修复用户级自动启动)
   - [2026-08-20：受限节点清理](#2026-08-20受限节点清理)
@@ -46,7 +48,7 @@ Forked from [SaladDay/clash-for-lab](https://github.com/SaladDay/clash-for-lab).
 
 - **用户权限**：普通用户权限即可，**无需 sudo 或 root**
 - **系统架构**：Linux x86_64/AMD64、Linux aarch64/ARM64（包括 NVIDIA Jetson Orin）
-- **Shell 支持**：`bash`、`zsh`
+- **Shell 支持**：`bash`（Ubuntu 默认 Shell；不支持 Zsh）
 - **配置来源**：需要有效的 Clash/Mihomo `config.yaml` 或订阅链接
 
 ### 安装步骤
@@ -93,6 +95,11 @@ bash install.sh 'https://your-subscription-url'
 - 配置用户环境变量
 - 设置命令行别名
 - 检测并分配可用端口
+- 安装成功后询问是否开启登录自动启动；启用后，该用户登录并建立 systemd 用户会话时会自动启动 Clash
+- 使用订阅链接安装时，安装成功后询问是否开启每2天一次的订阅自动更新
+
+两个可选功能在非交互安装中默认不启用，不会阻塞自动化脚本。可分别使用
+`clash autostart off` 和 `clash update auto off` 随时关闭。
 
 不传订阅链接时，安装器只读取仓库根目录的 `config.yaml`；文件不存在或为空会
 立即退出，不会创建安装目录或下载组件。安装脚本校验成功后会安装到
@@ -124,6 +131,31 @@ curl -I https://www.google.com
 ## 最近更新
 
 后续新增功能会按日期记录在这里，最新内容置顶。
+
+### 2026-09-01：v1.2.0 程序版本与当前终端自动刷新
+
+- 运行环境统一为 Bash，不再修改 `.zshrc` 或支持 Zsh。
+- 当前最新正式 Release 和本次程序版本均为 `v1.2.0`。后续小改动默认以最新
+  正式 Release 的 `vX.Y` 为基线递增第三位；当前基线的小版本依次为
+  `v1.2.1`、`v1.2.2`。例如最新正式 Release 变为 `v1.3.0` 后，小版本从
+  `v1.3.1` 开始。
+- 新增 `clash version`，显示已安装的 Clash Lab Kit 程序版本和程序更新对应的
+  Git 提交。
+- `clash update app` 会显示更新前后版本、短提交号，以及本次跨越版本中与用户
+  有关的变化。
+- 程序更新完成后直接刷新当前终端中的 Clash 命令，无需重开终端或加载整个
+  `.bashrc`。
+
+### 2026-08-29：安全默认值与更新可靠性
+
+- Web 管理端默认仅监听 `127.0.0.1`，远程访问使用 SSH 端口转发。
+- 配置、Mixin 和订阅更新先生成并校验临时文件，成功后再替换；重启失败会恢复
+  三份原配置和原运行状态，普通命令失败不会退出当前终端。
+- 同一用户的写操作使用 `flock` 互斥，避免人工操作与自动更新同时覆盖配置、
+  PID 或备份；状态查询等只读命令不受影响。
+- Mihomo 新内核替换后如果重启失败，会自动恢复旧内核并再次启动。
+- 安装后从任意目录执行更新，下载缓存都固定使用 `~/tools/mihomo/cache/`；程序
+  和内核更新增加总超时，网络不通时能够正常失败和回退。
 
 ### 2026-08-27：双架构与订阅兼容性
 
@@ -191,7 +223,7 @@ Commands:
     mixin    [-e|-r]        Mixin 配置文件
     secret   [SECRET]       Web 控制台密钥
     subscribe [URL]         设置或查看订阅地址
-    update   [auto|log]     更新订阅配置
+    update   [auto|log]     更新订阅配置；auto 支持 on|off|status
     update   app            更新 Clash Lab Kit 程序
     update   kernel         更新 Mihomo 内核
     mihomo   [version|update] 管理 mihomo 内核
@@ -297,6 +329,17 @@ clash secret your-password
 clash secret
 ```
 
+Web 管理端默认只监听 `127.0.0.1`，不会直接暴露给局域网或公网。远程服务器上
+推荐使用 SSH 端口转发；如果 `clash ui` 显示的管理端口不是 `9090`，请将下面
+命令中的两个 `9090` 都替换成实际端口：
+
+```bash
+ssh -L 9090:127.0.0.1:9090 user@server
+```
+
+保持 SSH 连接后，在本地浏览器打开 `http://127.0.0.1:9090/ui/`。`clash lan on`
+只控制代理端口的局域网访问，不会开放 Web 管理端。
+
 通过浏览器访问 Web 控制台可以：
 
 - 切换代理节点
@@ -320,6 +363,9 @@ linger，因此用户从未登录时不会仅因服务器开机而启动。
 #### 3.6 更新 Clash Lab Kit 程序
 
 ```bash
+# 查看 Clash Lab Kit 程序版本和当前提交
+clash version
+
 # 更新控制脚本和自动启动服务定义
 clash update app
 
@@ -328,7 +374,13 @@ clash update kernel
 ```
 
 程序更新会保留现有订阅、节点配置、Mixin、端口设置和日志，并在写入前备份
-当前脚本。更新完成后重新打开终端，或执行 `source ~/.bashrc` 载入新命令。
+当前文件。更新器通过 `resources/app-manifest.yaml` 获取版本化文件清单和 SHA256，
+全部下载、校验成功后才事务化替换；Mixin 只更新默认模板副本，不覆盖用户配置。
+旧版本尚无 manifest 时仍兼容原来的脚本更新。GitHub 查询和文件下载都有明确
+总超时，避免直连不通时无限等待。
+manifest 同时记录程序版本和用户可感知的变更。更新完成后会显示更新前后的版本、
+提交和本次跨越版本中与用户有关的变化，并直接重新加载 Clash 自身脚本；当前终端
+无需重新打开，也无需执行 `source ~/.bashrc`。
 
 #### 3.7 订阅管理
 
@@ -342,11 +394,18 @@ clash subscribe
 # 更新订阅配置
 clash update
 
-# 设置自动更新（每2天）
-clash update auto
+# 开启自动更新（每2天；不带 on 也兼容）
+clash update auto on
+
+# 关闭或查看自动更新状态
+clash update auto off
+clash update auto status
 
 # TODO:自定义更新天数
 ```
+
+建议优先使用 HTTPS 订阅地址。HTTP 订阅没有 TLS 保护，订阅令牌和返回配置可能
+在传输链路上被读取或篡改；目前为了兼容仅提供 HTTP 的订阅服务仍允许使用。
 
 #### 3.8 Mihomo 内核管理
 
@@ -373,9 +432,14 @@ clash mixin -e
 # 查看运行时配置
 clash mixin -r
 
-# 启用 TUN 模式（暂时还不好用,建议别用）
+# 启用 TUN 模式（需要管理员预先授予 TUN/网络管理权限）
 clash tun on
 ```
+
+普通 HTTP/SOCKS 代理模式不需要 root。TUN 模式需要访问 `/dev/net/tun`，并修改
+路由或策略规则，因此通常需要 root；也可以由管理员预先为 Mihomo 配置
+`CAP_NET_ADMIN` 等必要能力后，再由普通用户启动。未完成这些权限配置时，
+`clash tun on` 可能写入配置，但 Mihomo 无法正常建立 TUN 接口。
 
 **Mixin 配置说明**：
 
@@ -394,11 +458,14 @@ Mixin 配置文件（`~/tools/mihomo/mixin.yaml`）用于自定义代理行为�
 clash-lab-kit/
 ├── install.sh              # 主安装脚本
 ├── uninstall.sh            # 卸载脚本
+├── THIRD_PARTY_NOTICES.md  # 第三方组件、许可证与对应源码
+├── third_party/licenses/   # 随安装包分发的第三方许可证全文
 ├── script/                 # 脚本目录
 │   ├── clashctl.sh         # 主控制脚本
 │   └── common.sh           # 公共函数库
 ├── resources/              # 资源文件
 │   ├── mixin.yaml          # Mixin 配置模板
+│   ├── app-manifest.yaml   # 程序更新文件、版本和 SHA256 清单
 │   ├── Country.mmdb        # GeoIP 数据库
 │   └── zip/                # AMD64/ARM64 预下载资源压缩包
 └── README.md               # 项目文档
@@ -415,7 +482,9 @@ clash-lab-kit/
 ├── config/                 # 配置文件
 │   ├── mihomo.pid          # 进程 ID 文件
 │   ├── ports.conf          # 实际监听端口状态
-│   └── port.pref           # 端口模式偏好
+│   ├── port.pref           # 端口模式偏好
+│   └── operation.lock      # 同一用户写操作互斥锁
+├── cache/                  # 安装后的程序与内核下载缓存
 ├── config.yaml             # 主配置文件
 ├── mixin.yaml              # 自定义配置
 ├── runtime.yaml            # 运行时合并配置
@@ -451,7 +520,9 @@ A: 可以。执行 `clash mihomo update` 即可只替换 `~/tools/mihomo/bin/mih
 
 ### Q: Web 控制台无法访问怎么办？
 
-A: 检查防火墙设置，确保控制台端口（默认 9090）可以访问。如果是远程访问，需要配置端口转发。
+A: Web 管理端默认只监听本机，远程访问时按照“Web 控制台管理”章节建立 SSH
+端口转发，再打开本地地址。管理端口默认是 9090，但发生端口冲突时会自动变化，
+请以 `clash ui` 或 `clash status` 显示的实际端口为准。
 
 ### Q: 如何让局域网内其他设备使用代理？
 
@@ -480,7 +551,11 @@ A: 不会。通过 Web UI 修改的代理模式（rule/global/direct）会自动
 
 ## 许可证
 
-本项目采用与原项目相同的开源许可证。
+Clash Lab Kit 自身脚本采用仓库根目录 [MIT License](LICENSE)。内置的 Mihomo、
+subconverter、yq 和 Zashboard 保留各自上游许可证；版本、官方来源、对应源码、
+许可证全文位置和内置资产 SHA256 见
+[第三方软件声明](THIRD_PARTY_NOTICES.md)。其中当前打包的 Mihomo v1.19.25 与
+subconverter v0.9.0 使用 GPLv3，yq v4.45.1 与 Zashboard v2.3.0 使用 MIT。
 
 ## 免责声明
 

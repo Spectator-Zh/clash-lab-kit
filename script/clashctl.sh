@@ -5,17 +5,28 @@ _configure_url_test_groups() {
     local config_file="$1"
 
     [ -f "$config_file" ] || return 0
-    "$BIN_YQ" -i '
+    _edit_yaml_atomic "$config_file" '
         (.proxy-groups[] | select(.type == "url-test")) |= (
             .url = "https://chatgpt.com/cdn-cgi/trace" |
             .interval = 300 |
             .lazy = false |
             .tolerance = 0
         )
-    ' "$config_file" 2>/dev/null || {
+    ' 2>/dev/null || {
         _failcat "无法更新自动选择健康检查配置"
         return 1
     }
+}
+
+_build_runtime_config() {
+    local raw_file=$1
+    local mixin_file=$2
+    local runtime_file=$3
+
+    _configure_url_test_groups "$raw_file" || return 1
+    "$BIN_YQ" eval-all '. as $item ireduce ({}; . *+ $item) | (.. | select(tag == "!!seq")) |= unique' \
+        "$mixin_file" "$raw_file" "$mixin_file" > "$runtime_file" || return 1
+    _valid_config "$runtime_file"
 }
 
 _set_system_proxy() {
@@ -45,7 +56,7 @@ _set_system_proxy() {
 
     # Ensure mixin config directory exists and update using user permissions
     mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.system-proxy.enable = true' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _edit_yaml_atomic "$MIHOMO_CONFIG_MIXIN" '.system-proxy.enable = true' 2>/dev/null || {
         _failcat "无法更新系统代理配置"
         return 1
     }
@@ -63,7 +74,7 @@ _unset_system_proxy() {
 
     # Ensure mixin config exists and update using user permissions
     mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.system-proxy.enable = false' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _edit_yaml_atomic "$MIHOMO_CONFIG_MIXIN" '.system-proxy.enable = false' 2>/dev/null || {
         _failcat "无法更新系统代理配置"
     }
 }
@@ -168,15 +179,29 @@ function clashon() {
     # Ensure config directory exists
     mkdir -p "$(dirname "$MIHOMO_CONFIG_RUNTIME")"
 
-    # Keep URL-test groups responsive even after a subscription refresh.
-    _configure_url_test_groups "$MIHOMO_CONFIG_RAW" || return 1
-    
-    # Merge configuration using user permissions
-    "$BIN_YQ" eval-all '. as $item ireduce ({}; . *+ $item) | (.. | select(tag == "!!seq")) |= unique' \
-        "$MIHOMO_CONFIG_MIXIN" "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_MIXIN" > "$MIHOMO_CONFIG_RUNTIME"
-    
-    # 检查端口冲突并显示分配结果
-    _resolve_port_conflicts "$MIHOMO_CONFIG_RUNTIME" true
+    local staged_runtime
+    staged_runtime=$(mktemp "${MIHOMO_BASE_DIR}/.runtime.start.XXXXXX") || return 1
+    if ! _build_runtime_config "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_MIXIN" "$staged_runtime"; then
+        rm -f "$staged_runtime"
+        _failcat "生成或校验运行时配置失败"
+        return 1
+    fi
+
+    # 检查端口冲突并显示分配结果；最终结果校验后再原子发布。
+    _resolve_port_conflicts "$staged_runtime" true || {
+        rm -f "$staged_runtime"
+        return 1
+    }
+    _valid_config "$staged_runtime" || {
+        rm -f "$staged_runtime"
+        _failcat "端口调整后的运行时配置校验失败"
+        return 1
+    }
+    [ -f "$MIHOMO_CONFIG_RUNTIME" ] && chmod --reference="$MIHOMO_CONFIG_RUNTIME" "$staged_runtime" 2>/dev/null || true
+    mv -f "$staged_runtime" "$MIHOMO_CONFIG_RUNTIME" || {
+        rm -f "$staged_runtime"
+        return 1
+    }
     
     # Start mihomo process
     if start_mihomo; then
@@ -505,15 +530,16 @@ _remove_named_nodes() {
     }
 
     is_mihomo_running && was_running=true
-    mv -f "$staged" "$MIHOMO_CONFIG_RAW" || {
+    if [ "$was_running" = true ]; then
+        if ! _apply_config_transaction "$staged" "$MIHOMO_CONFIG_MIXIN"; then
+            rm -f "$staged"
+            _failcat "应用配置失败，原配置和运行状态未改变"
+            return 1
+        fi
+        rm -f "$staged"
+    elif ! mv -f "$staged" "$MIHOMO_CONFIG_RAW"; then
         rm -f "$staged"
         _failcat "无法替换配置，原配置仍保存在：$backup"
-        return 1
-    }
-
-    if [ "$was_running" = true ] && ! _merge_config_restart; then
-        cp -p "$backup" "$MIHOMO_CONFIG_RAW"
-        _failcat "应用配置失败，已恢复原配置"
         return 1
     fi
 
@@ -907,6 +933,22 @@ function clashstatus() {
 
 function clashui() {
     _get_ui_port
+    local controller_addr controller_host
+    controller_addr=$("$BIN_YQ" '.external-controller // "127.0.0.1:9090"' "$MIHOMO_CONFIG_RUNTIME" 2>/dev/null)
+    controller_host=${controller_addr%:*}
+
+    case "$controller_host" in
+    127.0.0.1 | localhost | ::1 | "[::1]")
+        printf "\n"
+        _okcat 'Web 控制台仅监听本机，未暴露给局域网或公网。'
+        _okcat "本机地址：http://127.0.0.1:${UI_PORT}/ui/"
+        _okcat "远程访问：ssh -L ${UI_PORT}:127.0.0.1:${UI_PORT} ${USER}@服务器地址"
+        _okcat "建立 SSH 转发后，在本地浏览器打开：http://127.0.0.1:${UI_PORT}/ui/"
+        printf "\n"
+        return 0
+        ;;
+    esac
+
     # 公网ip
     # ifconfig.me
     local query_url='api64.ipify.org'
@@ -930,34 +972,102 @@ function clashui() {
     printf "\n"
 }
 
-_merge_config_restart() {
-    # Use user-accessible temp directory instead of /tmp
-    local backup="${MIHOMO_BASE_DIR}/config/runtime.backup"
-    
-    # Ensure config directory exists
-    mkdir -p "$(dirname "$backup")"
-    
-    # Backup current runtime config
-    cat "$MIHOMO_CONFIG_RUNTIME" 2>/dev/null > "$backup"
+_apply_config_transaction() {
+    local raw_source=${1:-$MIHOMO_CONFIG_RAW}
+    local mixin_source=${2:-$MIHOMO_CONFIG_MIXIN}
+    local staged_raw staged_mixin staged_runtime backup_dir was_running=false restore_rc=0
 
-    # Preserve the local health-check policy after subscription updates.
-    _configure_url_test_groups "$MIHOMO_CONFIG_RAW" || return 1
-    
-    # Merge configurations using user permissions
-    "$BIN_YQ" eval-all '. as $item ireduce ({}; . *+ $item) | (.. | select(tag == "!!seq")) |= unique' \
-        "$MIHOMO_CONFIG_MIXIN" "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_MIXIN" > "$MIHOMO_CONFIG_RUNTIME"
-    
-    # Validate merged configuration
-    _valid_config "$MIHOMO_CONFIG_RUNTIME" || {
-        # Restore backup on validation failure
-        cat "$backup" > "$MIHOMO_CONFIG_RUNTIME" 2>/dev/null
-        _error_quit "验证失败：请检查 Mixin 配置"
+    mkdir -p "$MIHOMO_BASE_DIR/config" || return 1
+    staged_raw=$(mktemp "${MIHOMO_BASE_DIR}/.config.raw.XXXXXX") || return 1
+    staged_mixin=$(mktemp "${MIHOMO_BASE_DIR}/.config.mixin.XXXXXX") || {
+        rm -f "$staged_raw"
+        return 1
     }
-    
-    # Clean up backup file
-    rm -f "$backup"
-    
-    clashrestart
+    staged_runtime=$(mktemp "${MIHOMO_BASE_DIR}/.config.runtime.XXXXXX") || {
+        rm -f "$staged_raw" "$staged_mixin"
+        return 1
+    }
+    backup_dir=$(mktemp -d "${MIHOMO_BASE_DIR}/config/.transaction-backup.XXXXXX") || {
+        rm -f "$staged_raw" "$staged_mixin" "$staged_runtime"
+        return 1
+    }
+
+    if ! cp -p "$raw_source" "$staged_raw" ||
+        ! cp -p "$mixin_source" "$staged_mixin" ||
+        ! _build_runtime_config "$staged_raw" "$staged_mixin" "$staged_runtime"; then
+        rm -f "$staged_raw" "$staged_mixin" "$staged_runtime"
+        rm -rf "$backup_dir"
+        _failcat "新配置生成或校验失败，现有配置未改动"
+        return 1
+    fi
+
+    cp -p "$MIHOMO_CONFIG_RAW" "$backup_dir/config.yaml" || restore_rc=1
+    cp -p "$MIHOMO_CONFIG_MIXIN" "$backup_dir/mixin.yaml" || restore_rc=1
+    cp -p "$MIHOMO_CONFIG_RUNTIME" "$backup_dir/runtime.yaml" || restore_rc=1
+    if [ "$restore_rc" -ne 0 ]; then
+        rm -f "$staged_raw" "$staged_mixin" "$staged_runtime"
+        rm -rf "$backup_dir"
+        _failcat "无法备份现有配置，操作已取消"
+        return 1
+    fi
+
+    is_mihomo_running && was_running=true
+    chmod --reference="$MIHOMO_CONFIG_RUNTIME" "$staged_runtime" 2>/dev/null || true
+    if ! mv -f "$staged_raw" "$MIHOMO_CONFIG_RAW" ||
+        ! mv -f "$staged_mixin" "$MIHOMO_CONFIG_MIXIN" ||
+        ! mv -f "$staged_runtime" "$MIHOMO_CONFIG_RUNTIME"; then
+        cp -p "$backup_dir/config.yaml" "$MIHOMO_CONFIG_RAW" 2>/dev/null || true
+        cp -p "$backup_dir/mixin.yaml" "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || true
+        cp -p "$backup_dir/runtime.yaml" "$MIHOMO_CONFIG_RUNTIME" 2>/dev/null || true
+        rm -f "$staged_raw" "$staged_mixin" "$staged_runtime"
+        rm -rf "$backup_dir"
+        _failcat "配置发布失败，已恢复原配置"
+        return 1
+    fi
+
+    if clashrestart; then
+        rm -rf "$backup_dir"
+        return 0
+    fi
+
+    cp -p "$backup_dir/config.yaml" "$MIHOMO_CONFIG_RAW" 2>/dev/null || restore_rc=1
+    cp -p "$backup_dir/mixin.yaml" "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || restore_rc=1
+    cp -p "$backup_dir/runtime.yaml" "$MIHOMO_CONFIG_RUNTIME" 2>/dev/null || restore_rc=1
+    if [ "$was_running" = true ]; then
+        clashrestart >/dev/null 2>&1 || restore_rc=1
+    else
+        clashoff >/dev/null 2>&1 || true
+    fi
+    rm -rf "$backup_dir"
+    if [ "$restore_rc" -eq 0 ]; then
+        _failcat "新配置重启失败，已恢复原配置和运行状态"
+    else
+        _failcat "新配置重启失败，自动恢复未完全成功，请检查服务状态"
+    fi
+    return 1
+}
+
+_update_mixin_transaction() {
+    local expression=$1
+    local staged_mixin
+
+    staged_mixin=$(mktemp "${MIHOMO_BASE_DIR}/.mixin.update.XXXXXX") || return 1
+    cp -p "$MIHOMO_CONFIG_MIXIN" "$staged_mixin" || {
+        rm -f "$staged_mixin"
+        return 1
+    }
+    if ! "$BIN_YQ" -i "$expression" "$staged_mixin"; then
+        rm -f "$staged_mixin"
+        return 1
+    fi
+    _apply_config_transaction "$MIHOMO_CONFIG_RAW" "$staged_mixin"
+    local status=$?
+    rm -f "$staged_mixin"
+    return "$status"
+}
+
+_merge_config_restart() {
+    _apply_config_transaction "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_MIXIN"
 }
 
 function clashsecret() {
@@ -970,13 +1080,12 @@ function clashsecret() {
         fi
         ;;
     1)
-        # Ensure mixin config directory exists
-        mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-        "$BIN_YQ" -i ".secret = \"$1\"" "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+        local SECRET_VALUE=$1
+        export SECRET_VALUE
+        _update_mixin_transaction '.secret = strenv(SECRET_VALUE)' || {
             _failcat "密钥更新失败，请重新输入"
             return 1
         }
-        _merge_config_restart
         _okcat "密钥更新成功，已重启生效"
         ;;
     *)
@@ -998,24 +1107,19 @@ _tunstatus() {
 
 _tunoff() {
     _tunstatus >/dev/null || return 0
-    # Ensure mixin config directory exists
-    mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.tun.enable = false' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _update_mixin_transaction '.tun.enable = false' || {
         _failcat "无法更新 Tun 配置"
         return 1
     }
-    _merge_config_restart && _okcat "Tun 模式已关闭"
+    _okcat "Tun 模式已关闭"
 }
 
 _tunon() {
     _tunstatus 2>/dev/null && return 0
-    # Ensure mixin config directory exists
-    mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.tun.enable = true' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _update_mixin_transaction '.tun.enable = true' || {
         _failcat "无法更新 Tun 配置"
         return 1
     }
-    _merge_config_restart
     sleep 0.5s
     
     # Check if mihomo is running and tun mode is working
@@ -1071,24 +1175,22 @@ _lanoff() {
         [ "$current_status" = 'false' ] && return 0
     }
 
-    mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.allow-lan = false' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _update_mixin_transaction '.allow-lan = false' || {
         _failcat "无法更新局域网访问配置"
         return 1
     }
-    _merge_config_restart && _okcat "局域网访问已关闭"
+    _okcat "局域网访问已关闭"
 }
 
 _lanon() {
     local current_status=$("$BIN_YQ" '.allow-lan // false' "${MIHOMO_CONFIG_RUNTIME}" 2>/dev/null)
     [ "$current_status" = 'true' ] && return 0
 
-    mkdir -p "$(dirname "$MIHOMO_CONFIG_MIXIN")"
-    "$BIN_YQ" -i '.allow-lan = true' "$MIHOMO_CONFIG_MIXIN" 2>/dev/null || {
+    _update_mixin_transaction '.allow-lan = true' || {
         _failcat "无法更新局域网访问配置"
         return 1
     }
-    _merge_config_restart && _okcat "局域网访问已开启"
+    _okcat "局域网访问已开启"
 }
 
 function clashlan() {
@@ -1173,12 +1275,32 @@ function clashupdate() {
     esac
 
     local url=$(cat "$MIHOMO_CONFIG_URL" 2>/dev/null)
-    local is_auto
+    local is_auto auto_action
 
     case "$1" in
     auto)
         is_auto=true
-        [ -n "$2" ] && url=$2
+        case "${2:-on}" in
+        on | enable)
+            auto_action=on
+            [ -n "$3" ] && url=$3
+            ;;
+        off | disable)
+            auto_action=off
+            ;;
+        status)
+            auto_action=status
+            ;;
+        http://* | https://*)
+            # Backward compatibility: clash update auto URL
+            auto_action=on
+            url=$2
+            ;;
+        *)
+            _failcat "用法: clash update auto [on|off|status] [URL]"
+            return 1
+            ;;
+        esac
         ;;
     log)
         tail "${MIHOMO_UPDATE_LOG}" 2>/dev/null || _failcat "暂无更新日志"
@@ -1189,46 +1311,100 @@ function clashupdate() {
         ;;
     esac
 
+    # 自动更新只适用于已保存的 HTTP(S) 订阅地址。
+    if [ "$is_auto" = true ]; then
+        command -v crontab >/dev/null 2>&1 || {
+            _failcat "系统未安装 crontab，无法管理订阅自动更新"
+            return 1
+        }
+
+        case "$auto_action" in
+        off)
+            if crontab -l 2>/dev/null | grep -qs 'mihomoctl_auto_update'; then
+                local remaining_crontab
+                remaining_crontab=$(crontab -l 2>/dev/null | grep -v 'mihomoctl_auto_update' || true)
+                if [ -n "$remaining_crontab" ]; then
+                    printf '%s\n' "$remaining_crontab" | crontab - || return 1
+                else
+                    crontab -r 2>/dev/null || true
+                fi
+                _okcat "已关闭订阅自动更新；现有订阅配置保持不变"
+            else
+                _okcat "订阅自动更新当前未开启"
+            fi
+            return 0
+            ;;
+        status)
+            if crontab -l 2>/dev/null | grep -qs 'mihomoctl_auto_update'; then
+                _okcat "订阅自动更新：开启（每2天执行一次）"
+            else
+                _okcat "订阅自动更新：关闭"
+            fi
+            return 0
+            ;;
+        esac
+
+        case "$url" in
+        http://* | https://*) ;;
+        *)
+            _failcat "未设置有效订阅地址，请先执行 clash subscribe URL"
+            return 1
+            ;;
+        esac
+
+        # Persist URL for cron runs (cron executes `mihomoctl update`, which reads MIHOMO_CONFIG_URL).
+        mkdir -p "$(dirname "$MIHOMO_CONFIG_URL")"
+        printf '%s\n' "$url" > "$MIHOMO_CONFIG_URL"
+
+        # Add one user-level crontab entry (every 2 days at midnight).
+        if ! crontab -l 2>/dev/null | grep -qs 'mihomoctl_auto_update'; then
+            (crontab -l 2>/dev/null || true; echo "0 0 */2 * * $_SHELL -i -c 'mihomoctl update' # mihomoctl_auto_update") | crontab - || return 1
+        fi
+        _okcat "已开启订阅自动更新（每2天执行一次）"
+        _okcat "关闭命令：clash update auto off"
+        return 0
+    fi
+
     # 如果没有提供有效的订阅链接（url为空或者不是http开头），则使用默认配置文件
     [ "${url:0:4}" != "http" ] && {
         _failcat "没有提供有效的订阅链接：使用 ${MIHOMO_CONFIG_RAW} 进行更新..."
         url="file://$MIHOMO_CONFIG_RAW"
     }
 
-    # 如果是自动更新模式，则设置用户级定时任务
-    [ "$is_auto" = true ] && {
-        # Persist URL for cron runs (cron executes `mihomoctl update`, which reads MIHOMO_CONFIG_URL).
-        [ "${url:0:4}" = "http" ] && {
-            mkdir -p "$(dirname "$MIHOMO_CONFIG_URL")"
-            echo "$url" > "$MIHOMO_CONFIG_URL"
-        }
+    _okcat '👌' "正在下载：现有配置将在新配置验证通过后替换..."
 
-        # Check if crontab entry already exists
-        crontab -l 2>/dev/null | grep -qs 'mihomoctl_auto_update' || {
-            # Add user-level crontab entry (every 2 days at midnight)
-            (crontab -l 2>/dev/null; echo "0 0 */2 * * $_SHELL -i -c 'mihomoctl update' # mihomoctl_auto_update") | crontab -
-        }
-        _okcat "已设置用户级定时更新订阅 (每2天执行一次)" && return 0
-    }
-
-    _okcat '👌' "正在下载：原配置已备份..."
-    
-    # Ensure directories exist and backup using user permissions
+    local staged_raw
     mkdir -p "$(dirname "$MIHOMO_CONFIG_RAW_BAK")" "$(dirname "$MIHOMO_UPDATE_LOG")"
-    cp "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_RAW_BAK" 2>/dev/null
-
-    _rollback() {
-        _failcat '🍂' "$1"
-        # Restore backup using user permissions
-        cp "$MIHOMO_CONFIG_RAW_BAK" "$MIHOMO_CONFIG_RAW" 2>/dev/null
+    staged_raw=$(mktemp "${MIHOMO_BASE_DIR}/.subscription.update.XXXXXX") || return 1
+    if [ "${url:0:5}" = "file:" ]; then
+        cp -p "$MIHOMO_CONFIG_RAW" "$staged_raw" || {
+            rm -f "$staged_raw"
+            return 1
+        }
+    elif ! _download_config "$staged_raw" "$url"; then
+        rm -f "$staged_raw"
         echo "[$(date +"%Y-%m-%d %H:%M:%S")] 订阅更新失败：$url" >> "${MIHOMO_UPDATE_LOG}"
+        _failcat '🍂' "下载或转换失败，现有配置未改动；转换日志：$BIN_SUBCONVERTER_LOG"
+        return 1
+    fi
+    if ! _valid_config "$staged_raw"; then
+        rm -f "$staged_raw"
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] 订阅更新失败：$url" >> "${MIHOMO_UPDATE_LOG}"
+        _failcat '🍂' "新配置校验失败，现有配置未改动；转换日志：$BIN_SUBCONVERTER_LOG"
+        return 1
+    fi
+
+    cp -p "$MIHOMO_CONFIG_RAW" "$MIHOMO_CONFIG_RAW_BAK" 2>/dev/null || {
+        rm -f "$staged_raw"
+        _failcat "原配置备份失败，更新已取消"
         return 1
     }
-
-    _download_config "$MIHOMO_CONFIG_RAW" "$url" || { _rollback "下载失败：已回滚配置" || true; return 1; }
-    _valid_config "$MIHOMO_CONFIG_RAW" || { _rollback "转换失败：已回滚配置，转换日志：$BIN_SUBCONVERTER_LOG" || true; return 1; }
-
-    _merge_config_restart || return 1
+    if ! _apply_config_transaction "$staged_raw" "$MIHOMO_CONFIG_MIXIN"; then
+        rm -f "$staged_raw"
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] 订阅更新失败：$url" >> "${MIHOMO_UPDATE_LOG}"
+        return 1
+    fi
+    rm -f "$staged_raw"
     _okcat '🍃' '订阅更新成功'
     
     # Save URL and log success using user permissions
@@ -1237,23 +1413,202 @@ function clashupdate() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] 订阅更新成功：$url" >> "${MIHOMO_UPDATE_LOG}"
 }
 
-_download_app_script() {
-    local name=$1
+_download_app_file() {
+    local path=$1
     local dest=$2
     local revision=$3
-    local url="https://raw.githubusercontent.com/${CLASH_LAB_KIT_REPO}/${revision}/script/${name}"
+    local url="https://raw.githubusercontent.com/${CLASH_LAB_KIT_REPO}/${revision}/${path}"
     local cache_bust proxy_url
     cache_bust=$(date +%s)
     proxy_url="${URL_GH_PROXY}/${url}?v=${cache_bust}"
 
     # Prefer the canonical source so an accelerator cannot return stale code.
-    if curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 \
+    if curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 \
         --output "$dest" "${url}?v=${cache_bust}"; then
         return 0
     fi
 
-    curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 \
+    curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 \
         --output "$dest" "$proxy_url"
+}
+
+_verify_app_file_sha256() {
+    local file=$1
+    local expected=$2
+    local actual
+
+    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}') || return 1
+    [ "$actual" = "$expected" ]
+}
+
+_safe_app_manifest_path() {
+    local source=$1
+    local target=$2
+
+    case "$source" in
+    script/* | resources/* | third_party/licenses/* | LICENSE | THIRD_PARTY_NOTICES.md) ;;
+    *) return 1 ;;
+    esac
+    case "$target" in
+    script/* | config/templates/* | licenses/* | Country.mmdb | LICENSE | THIRD_PARTY_NOTICES.md) ;;
+    *) return 1 ;;
+    esac
+    case "/$source/$target/" in
+    *'/../'* | *'/./'* | *'//'*) return 1 ;;
+    esac
+    case "$source$target" in
+    *[[:space:]]*) return 1 ;;
+    esac
+}
+
+_valid_app_version() {
+    printf '%s\n' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+_app_version_is_older() {
+    local target=$1
+    local current=$2
+    local oldest
+
+    _valid_app_version "$target" && _valid_app_version "$current" || return 1
+    [ "$target" != "$current" ] || return 1
+    oldest=$(printf '%s\n%s\n' "$target" "$current" | LC_ALL=C sort -V | head -n1) || return 1
+    [ "$oldest" = "$target" ]
+}
+
+_prepare_manifest_app_files() {
+    local manifest=$1
+    local revision=$2
+    local update_dir=$3
+    local app_version change_count first_change_version count index source target expected mode staged
+
+    [ "$("$BIN_YQ" -r '.manifest-version // 0' "$manifest" 2>/dev/null)" = 1 ] || return 1
+    [ "$("$BIN_YQ" -r '.config-schema-version // 0' "$manifest" 2>/dev/null)" = 1 ] || return 1
+    app_version=$("$BIN_YQ" -r '.app-version // ""' "$manifest" 2>/dev/null) || return 1
+    _valid_app_version "$app_version" || return 1
+    change_count=$("$BIN_YQ" -r '(.user-facing-changes // []) | length' "$manifest" 2>/dev/null) || return 1
+    case "$change_count" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$change_count" -gt 0 ] || return 1
+    first_change_version=$("$BIN_YQ" -r '.user-facing-changes[0].version // ""' "$manifest" 2>/dev/null) || return 1
+    [ "$first_change_version" = "$app_version" ] || return 1
+    count=$("$BIN_YQ" -r '.files | length' "$manifest" 2>/dev/null) || return 1
+    case "$count" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$count" -gt 0 ] || return 1
+
+    mkdir -p "$update_dir/files"
+    : > "$update_dir/entries"
+    index=0
+    while [ "$index" -lt "$count" ]; do
+        source=$("$BIN_YQ" -r ".files[$index].source // \"\"" "$manifest") || return 1
+        target=$("$BIN_YQ" -r ".files[$index].target // \"\"" "$manifest") || return 1
+        expected=$("$BIN_YQ" -r ".files[$index].sha256 // \"\"" "$manifest") || return 1
+        mode=$("$BIN_YQ" -r ".files[$index].mode // \"0644\"" "$manifest") || return 1
+        _safe_app_manifest_path "$source" "$target" || return 1
+        case "$expected" in
+        *[!0-9a-f]* | '') return 1 ;;
+        esac
+        [ ${#expected} -eq 64 ] || return 1
+        case "$mode" in
+        0644 | 0755) ;;
+        *) return 1 ;;
+        esac
+        if awk -F '\t' -v wanted="$target" '$2 == wanted {found = 1} END {exit !found}' \
+            "$update_dir/entries"; then
+            return 1
+        fi
+
+        staged="$update_dir/files/$index"
+        _download_app_file "$source" "$staged" "$revision" || return 1
+        _verify_app_file_sha256 "$staged" "$expected" || return 1
+        printf '%s\t%s\t%s\n' "$index" "$target" "$mode" >> "$update_dir/entries"
+        index=$((index + 1))
+    done
+
+    grep -q $'\tscript/common.sh\t' "$update_dir/entries" || return 1
+    grep -q $'\tscript/clashctl.sh\t' "$update_dir/entries" || return 1
+}
+
+_prepare_legacy_app_files() {
+    local revision=$1
+    local update_dir=$2
+
+    mkdir -p "$update_dir/files"
+    : > "$update_dir/entries"
+    _download_app_file script/common.sh "$update_dir/files/0" "$revision" &&
+        _download_app_file script/clashctl.sh "$update_dir/files/1" "$revision" || return 1
+    printf '0\tscript/common.sh\t0644\n1\tscript/clashctl.sh\t0644\n' > "$update_dir/entries"
+}
+
+_validate_staged_app_scripts() {
+    local update_dir=$1
+    local common_index clashctl_index
+
+    common_index=$(awk -F '\t' '$2 == "script/common.sh" {print $1; exit}' "$update_dir/entries")
+    clashctl_index=$(awk -F '\t' '$2 == "script/clashctl.sh" {print $1; exit}' "$update_dir/entries")
+    [ -n "$common_index" ] && [ -n "$clashctl_index" ] || return 1
+    bash -n "$update_dir/files/$common_index" "$update_dir/files/$clashctl_index" || return 1
+    grep -Fqs 'function clashappupdate()' "$update_dir/files/$clashctl_index" &&
+        grep -Fqs 'function clashautostart()' "$update_dir/files/$clashctl_index"
+}
+
+_restore_app_files() {
+    local update_dir=$1
+    local index target mode dest staged
+
+    while IFS=$'\t' read -r index target mode; do
+        [ -n "$index" ] || continue
+        dest="$MIHOMO_BASE_DIR/$target"
+        if [ -f "$update_dir/backup/$index" ]; then
+            mkdir -p "$(dirname "$dest")" || continue
+            staged=$(mktemp "${dest}.restore.XXXXXX") || continue
+            if cp -p "$update_dir/backup/$index" "$staged"; then
+                mv -f "$staged" "$dest" || rm -f "$staged"
+            else
+                rm -f "$staged"
+            fi
+        elif [ -f "$update_dir/backup/$index.absent" ]; then
+            rm -f "$dest"
+        fi
+    done < "$update_dir/entries"
+}
+
+_publish_app_files() {
+    local update_dir=$1
+    local index target mode dest staged
+
+    mkdir -p "$update_dir/backup" || return 1
+    while IFS=$'\t' read -r index target mode; do
+        [ -n "$index" ] || continue
+        dest="$MIHOMO_BASE_DIR/$target"
+        if [ -e "$dest" ]; then
+            cp -p "$dest" "$update_dir/backup/$index" || return 1
+        else
+            : > "$update_dir/backup/$index.absent" || return 1
+        fi
+    done < "$update_dir/entries"
+
+    while IFS=$'\t' read -r index target mode; do
+        [ -n "$index" ] || continue
+        dest="$MIHOMO_BASE_DIR/$target"
+        mkdir -p "$(dirname "$dest")" || {
+            _restore_app_files "$update_dir"
+            return 1
+        }
+        staged=$(mktemp "${dest}.new.XXXXXX") || {
+            _restore_app_files "$update_dir"
+            return 1
+        }
+        if ! cp "$update_dir/files/$index" "$staged" ||
+            ! chmod "$mode" "$staged" || ! mv -f "$staged" "$dest"; then
+            rm -f "$staged"
+            _restore_app_files "$update_dir"
+            return 1
+        fi
+    done < "$update_dir/entries"
 }
 
 _get_app_revision() {
@@ -1265,24 +1620,101 @@ _get_app_revision() {
     # normal Git and Raw access still work. Resolve the branch through Git
     # first, then keep the API paths as fallbacks.
     if command -v git >/dev/null 2>&1; then
-        revision=$(git ls-remote "$git_url" "refs/heads/${CLASH_LAB_KIT_BRANCH}" 2>/dev/null |
-            awk 'NR == 1 {print $1}')
+        if command -v timeout >/dev/null 2>&1; then
+            revision=$(GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote "$git_url" \
+                "refs/heads/${CLASH_LAB_KIT_BRANCH}" 2>/dev/null | awk 'NR == 1 {print $1}')
+        else
+            revision=$(GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 \
+                ls-remote "$git_url" "refs/heads/${CLASH_LAB_KIT_BRANCH}" 2>/dev/null |
+                awk 'NR == 1 {print $1}')
+        fi
         if [ ${#revision} -eq 40 ]; then
             printf '%s\n' "$revision"
             return 0
         fi
     fi
 
-    response=$(curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 "$url") ||
-        response=$(curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 "${URL_GH_PROXY}/${url}") ||
+    response=$(curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 "$url") ||
+        response=$(curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 "${URL_GH_PROXY}/${url}") ||
         return 1
     revision=$(printf '%s\n' "$response" | sed -n 's/.*"sha":[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -n1)
     [ ${#revision} -eq 40 ] || return 1
     printf '%s\n' "$revision"
 }
 
+_get_installed_app_version() {
+    local manifest="${MIHOMO_BASE_DIR}/config/app-manifest.yaml"
+    local version
+    [ -f "$manifest" ] || return 1
+    version=$("$BIN_YQ" -r '.app-version // ""' "$manifest" 2>/dev/null) || return 1
+    _valid_app_version "$version" || return 1
+    printf '%s\n' "$version"
+}
+
+_get_installed_app_revision() {
+    local revision_file="${MIHOMO_BASE_DIR}/config/app-revision"
+    [ -s "$revision_file" ] || return 1
+    sed -n '1p' "$revision_file"
+}
+
+_short_app_revision() {
+    local revision=$1
+    [ -n "$revision" ] || return 1
+    printf '%.12s\n' "$revision"
+}
+
+_show_app_update_changes() {
+    local previous_version=$1
+    local manifest=$2
+    local count index version item_count item_index item
+
+    [ -f "$manifest" ] || return 0
+    count=$("$BIN_YQ" -r '(.user-facing-changes // []) | length' "$manifest" 2>/dev/null) || return 0
+    case "$count" in
+    '' | *[!0-9]*) return 0 ;;
+    esac
+
+    index=0
+    while [ "$index" -lt "$count" ]; do
+        version=$("$BIN_YQ" -r ".user-facing-changes[$index].version // \"\"" "$manifest" 2>/dev/null) || break
+        [ -n "$previous_version" ] && [ "$version" = "$previous_version" ] && break
+        item_count=$("$BIN_YQ" -r "(.user-facing-changes[$index].items // []) | length" "$manifest" 2>/dev/null) || break
+        case "$item_count" in
+        '' | *[!0-9]*) break ;;
+        esac
+        if [ "$item_count" -gt 0 ]; then
+            _okcat "${version} 更新："
+            item_index=0
+            while [ "$item_index" -lt "$item_count" ]; do
+                item=$("$BIN_YQ" -r ".user-facing-changes[$index].items[$item_index] // \"\"" "$manifest" 2>/dev/null) || break
+                [ -n "$item" ] && printf '%s\n' "  - $item"
+                item_index=$((item_index + 1))
+            done
+        fi
+        index=$((index + 1))
+    done
+}
+
+function clashversion() {
+    local version revision
+    version=$(_get_installed_app_version 2>/dev/null) || version="${CLASH_LAB_KIT_BASE_RELEASE:-旧版（未记录）}"
+    revision=$(_get_installed_app_revision 2>/dev/null) || revision=""
+
+    _okcat "Clash Lab Kit 版本：$version"
+    if [ -n "$revision" ]; then
+        _okcat "程序提交：$(_short_app_revision "$revision")"
+    else
+        _okcat "程序提交：安装包或旧版未记录"
+    fi
+}
+
 function clashappupdate() {
-    local update_dir backup_dir revision
+    local update_dir backup_dir revision manifest_index revision_index
+    local previous_version previous_version_display previous_revision target_version used_manifest=false
+    local reload_success_message
+    previous_version=$(_get_installed_app_version 2>/dev/null) || previous_version=""
+    previous_version_display=${previous_version:-${CLASH_LAB_KIT_BASE_RELEASE:-旧版（未记录）}}
+    previous_revision=$(_get_installed_app_revision 2>/dev/null) || previous_revision=""
     update_dir=$(mktemp -d "${TMPDIR:-/tmp}/clash-lab-kit-update.XXXXXX") || return 1
     backup_dir="${MIHOMO_BASE_DIR}/config/script-backup"
 
@@ -1292,36 +1724,59 @@ function clashappupdate() {
         _failcat "无法获取 GitHub 最新版本，现有安装未改动"
         return 1
     }
-    _download_app_script common.sh "$update_dir/common.sh" "$revision" &&
-        _download_app_script clashctl.sh "$update_dir/clashctl.sh" "$revision" || {
+
+    if _download_app_file resources/app-manifest.yaml "$update_dir/app-manifest.yaml" "$revision"; then
+        target_version=$("$BIN_YQ" -r '.app-version // ""' "$update_dir/app-manifest.yaml" 2>/dev/null) || {
             rm -rf "$update_dir"
-            _failcat "程序更新下载失败，现有安装未改动"
             return 1
         }
+        if ! _valid_app_version "$target_version"; then
+            rm -rf "$update_dir"
+            _failcat "程序更新清单中的版本号无效，现有安装未改动"
+            return 1
+        fi
+        if [ -n "$previous_version" ] && _app_version_is_older "$target_version" "$previous_version"; then
+            rm -rf "$update_dir"
+            _failcat "拒绝程序降级：当前版本 $previous_version，目标版本 $target_version"
+            return 1
+        fi
+        _prepare_manifest_app_files "$update_dir/app-manifest.yaml" "$revision" "$update_dir" || {
+            rm -rf "$update_dir"
+            _failcat "程序更新清单无效或文件校验失败，现有安装未改动"
+            return 1
+        }
+        used_manifest=true
+        manifest_index=$(wc -l < "$update_dir/entries")
+        revision_index=$((manifest_index + 1))
+        cp "$update_dir/app-manifest.yaml" "$update_dir/files/$manifest_index" || {
+            rm -rf "$update_dir"
+            return 1
+        }
+        printf '%s\n' "$revision" > "$update_dir/files/$revision_index" || {
+            rm -rf "$update_dir"
+            return 1
+        }
+        printf '%s\tconfig/app-manifest.yaml\t0644\n' "$manifest_index" >> "$update_dir/entries"
+        printf '%s\tconfig/app-revision\t0644\n' "$revision_index" >> "$update_dir/entries"
+    elif ! _prepare_legacy_app_files "$revision" "$update_dir"; then
+        rm -rf "$update_dir"
+        _failcat "程序更新下载失败，现有安装未改动"
+        return 1
+    fi
 
-    bash -n "$update_dir/common.sh" "$update_dir/clashctl.sh" || {
+    _validate_staged_app_scripts "$update_dir" || {
         rm -rf "$update_dir"
         _failcat "新脚本语法检查失败，现有安装未改动"
         return 1
     }
 
-    if ! grep -Fqs 'function clashappupdate()' "$update_dir/clashctl.sh" ||
-        ! grep -Fqs 'function clashautostart()' "$update_dir/clashctl.sh"; then
-        rm -rf "$update_dir"
-        _failcat "远端程序版本不完整或早于当前版本，现有安装未改动"
-        return 1
-    fi
-
     mkdir -p "$backup_dir" "$MIHOMO_SCRIPT_DIR" || return 1
     cp "$MIHOMO_SCRIPT_DIR/common.sh" "$backup_dir/common.sh" 2>/dev/null || true
     cp "$MIHOMO_SCRIPT_DIR/clashctl.sh" "$backup_dir/clashctl.sh" 2>/dev/null || true
 
-    if ! cp "$update_dir/common.sh" "$MIHOMO_SCRIPT_DIR/common.sh" ||
-        ! cp "$update_dir/clashctl.sh" "$MIHOMO_SCRIPT_DIR/clashctl.sh"; then
-        cp "$backup_dir/common.sh" "$MIHOMO_SCRIPT_DIR/common.sh" 2>/dev/null || true
-        cp "$backup_dir/clashctl.sh" "$MIHOMO_SCRIPT_DIR/clashctl.sh" 2>/dev/null || true
+    if ! _publish_app_files "$update_dir"; then
         rm -rf "$update_dir"
-        _failcat "程序更新写入失败，已恢复原脚本"
+        _failcat "程序更新写入失败，已恢复原文件"
         return 1
     fi
     rm -rf "$update_dir"
@@ -1330,8 +1785,23 @@ function clashappupdate() {
         _write_autostart_service && systemctl --user daemon-reload
     fi
 
-    _okcat "Clash Lab Kit 程序更新完成"
-    _okcat "请重新打开终端，或执行: source ~/.bashrc"
+    if [ "$used_manifest" = true ]; then
+        _okcat "Clash Lab Kit 程序更新完成：$previous_version_display -> $target_version"
+        _okcat "程序提交：${previous_revision:+$(_short_app_revision "$previous_revision") -> }$(_short_app_revision "$revision")"
+        _show_app_update_changes "$previous_version" "${MIHOMO_BASE_DIR}/config/app-manifest.yaml"
+    else
+        _okcat "Clash Lab Kit 程序更新完成：main@$(_short_app_revision "$revision")"
+    fi
+
+    reload_success_message=$(_okcat "当前终端已自动加载新版命令")
+    if ! . "$MIHOMO_SCRIPT_DIR/common.sh" || ! . "$MIHOMO_SCRIPT_DIR/clashctl.sh"; then
+        printf '%s\n' "程序文件已更新，但当前终端加载新版命令失败" >&2
+        return 1
+    fi
+    if ! _set_rc >/dev/null 2>&1; then
+        printf '%s\n' "程序已更新，但 Bash 启动配置同步失败，请检查 ~/.bashrc 写权限" >&2
+    fi
+    printf '%s\n' "$reload_success_message"
 }
 
 function clashmihomo() {
@@ -1383,7 +1853,7 @@ function clashmihomo() {
         if [ -n "$url" ]; then
             downloaded="${ZIP_BASE_DIR}/$(basename "$url")"
             _okcat "正在下载自定义 mihomo 内核..."
-            curl --progress-bar --show-error --fail --location --connect-timeout 15 --retry 2 \
+            curl --progress-bar --show-error --fail --location --connect-timeout 15 --max-time 180 --retry 2 \
                 --output "$downloaded" "$url" || {
                 rm -f "$downloaded"
                 _failcat "自定义 mihomo 下载失败"
@@ -1403,7 +1873,17 @@ function clashmihomo() {
 
         if [ "$was_running" = true ] && [ "$restart_after" = true ]; then
             _okcat "检测到 mihomo 正在运行，正在重启以应用新内核..."
-            clashrestart || return 1
+            if ! clashrestart; then
+                _failcat "新内核启动失败，正在恢复旧内核..."
+                if [ -n "$MIHOMO_KERNEL_BACKUP" ] &&
+                    _restore_installed_mihomo "$MIHOMO_KERNEL_BACKUP" &&
+                    clashrestart; then
+                    _failcat "内核更新失败，旧内核已恢复并重新启动"
+                else
+                    _failcat "内核更新失败，旧内核自动恢复也未成功，请立即检查服务"
+                fi
+                return 1
+            fi
         fi
 
         _okcat "mihomo 内核更新完成"
@@ -1427,9 +1907,21 @@ EOF
 function clashmixin() {
     case "$1" in
     -e)
-        vim "$MIHOMO_CONFIG_MIXIN" && {
-            _merge_config_restart && _okcat "配置更新成功，已重启生效"
+        local staged_mixin
+        staged_mixin=$(mktemp "${MIHOMO_BASE_DIR}/.mixin.edit.XXXXXX") || return 1
+        cp -p "$MIHOMO_CONFIG_MIXIN" "$staged_mixin" || {
+            rm -f "$staged_mixin"
+            return 1
         }
+        if vim "$staged_mixin"; then
+            _apply_config_transaction "$MIHOMO_CONFIG_RAW" "$staged_mixin" &&
+                _okcat "配置更新成功，已重启生效"
+            local status=$?
+            rm -f "$staged_mixin"
+            return "$status"
+        fi
+        rm -f "$staged_mixin"
+        return 1
         ;;
     -r)
         less -f "$MIHOMO_CONFIG_RUNTIME"
@@ -1440,8 +1932,80 @@ function clashmixin() {
     esac
 }
 
-function clashctl() {
+_operation_requires_lock() {
+    local command=$1
+    local action=$2
+
+    case "$command" in
+    "" | help | -h | --help | ui | status | version)
+        return 1
+        ;;
+    port | tun | lan | autostart)
+        [ -n "$action" ] && [ "$action" != status ]
+        ;;
+    proxy)
+        [ "$action" != status ]
+        ;;
+    mixin)
+        [ "$action" = -e ]
+        ;;
+    secret | subscribe)
+        [ -n "$action" ]
+        ;;
+    update)
+        case "$action" in
+        log) return 1 ;;
+        auto)
+            [ "${3:-on}" != status ]
+            ;;
+        *) return 0 ;;
+        esac
+        ;;
+    mihomo)
+        [ -n "$action" ] && [ "$action" != version ]
+        ;;
+    *)
+        return 0
+        ;;
+    esac
+}
+
+_with_operation_lock() {
+    if [ "${MIHOMO_SYSTEMD_RUN:-0}" = 1 ] || [ "${MIHOMO_OPERATION_LOCK_DEPTH:-0}" -gt 0 ]; then
+        "$@"
+        return $?
+    fi
+
+    if ! command -v flock >/dev/null 2>&1; then
+        [ "${MIHOMO_FLOCK_WARNING_SHOWN:-0}" = 1 ] ||
+            _failcat "系统未安装 flock，本次操作无法启用并发保护"
+        MIHOMO_FLOCK_WARNING_SHOWN=1
+        "$@"
+        return $?
+    fi
+
+    mkdir -p "$MIHOMO_BASE_DIR/config" || return 1
+    exec 9>"${MIHOMO_BASE_DIR}/config/operation.lock" || return 1
+    if ! flock -n 9; then
+        exec 9>&-
+        _failcat "另一项 Clash 变更操作正在进行，请稍后重试"
+        return 1
+    fi
+
+    MIHOMO_OPERATION_LOCK_DEPTH=1
+    "$@"
+    local status=$?
+    MIHOMO_OPERATION_LOCK_DEPTH=0
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+    return "$status"
+}
+
+function _clashctl_dispatch() {
     case "$1" in
+    version)
+        clashversion
+        ;;
     on)
         clashon
         ;;
@@ -1517,6 +2081,7 @@ Usage:
     mihomoctl COMMAND [OPTION]
 
 Commands:
+    version                 查看 Clash Lab Kit 程序版本
     on                      开启代理
     off                     关闭代理
     refresh [关键词]        测速并选择最快节点，可按名称筛选
@@ -1532,7 +2097,7 @@ Commands:
     mixin    [-e|-r]        Mixin 配置文件
     secret   [SECRET]       Web 控制台密钥
     subscribe [URL]         设置或查看订阅地址
-    update   [auto|log]     更新订阅配置
+    update   [auto|log]     更新订阅配置；auto 支持 on|off|status
     update   app            更新 Clash Lab Kit 程序
     update   kernel         更新 Mihomo 内核
     autostart [on|off|status] 登录后自动启动
@@ -1547,6 +2112,14 @@ Commands:
 EOF
         ;;
     esac
+}
+
+function clashctl() {
+    if _operation_requires_lock "$@"; then
+        _with_operation_lock _clashctl_dispatch "$@"
+    else
+        _clashctl_dispatch "$@"
+    fi
 }
 
 function mihomoctl() {

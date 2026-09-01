@@ -1,0 +1,82 @@
+manifest-version: 1
+config-schema-version: 1
+app-version: v1.2.0
+
+# 按新到旧保留当前正式 Release 基线内的全部补丁版本。第一项必须与 app-version
+# 一致；clash update app 会根据已安装版本，仅显示本次跨越的版本条目。
+user-facing-changes:
+  - version: v1.2.0
+    items:
+      - 新增 clash version，可查看当前程序版本和提交
+      - 程序更新后当前终端自动生效，并显示版本变化和更新内容
+      - Web 管理端默认仅本机访问，远程使用 SSH 端口转发
+      - 安装后可选择开启登录自动启动和订阅自动更新
+      - 运行环境统一为 Bash，不再支持 Zsh
+      - 还有一些稳定性、安全性和使用体验优化
+
+# clash update app 会校验并事务化更新 files 中声明的普通文件。
+# template 文件只更新默认模板，不覆盖用户正在使用的 mixin.yaml。
+files:
+  - source: script/common.sh
+    target: script/common.sh
+    sha256: d2e5e438821f05ad520a8e6b16e542bc3658a020a44e2b5c6b451eecf9e5050e
+    mode: "0644"
+  - source: script/clashctl.sh
+    target: script/clashctl.sh
+    sha256: 7a17e15c9eb5cb7718d1fde06885a690c813af6c199cdc7f770b0b25d7c1837c
+    mode: "0644"
+  - source: resources/mixin.yaml
+    target: config/templates/mixin.yaml
+    sha256: 3d522f641ab532f5a70b89795826a9c49151cf29bcfa0455355b76c6773c1a2a
+    mode: "0644"
+  - source: resources/Country.mmdb
+    target: Country.mmdb
+    sha256: b243a439f3e3e9d4d9cd63ec20dcda0cb1c12009b81774b31843b460aa270498
+    mode: "0644"
+  - source: LICENSE
+    target: LICENSE
+    sha256: 7372f8f69724d5beef02c61224edbc551476c3b144520e067f2f67609bcdf8ed
+    mode: "0644"
+  - source: THIRD_PARTY_NOTICES.md
+    target: THIRD_PARTY_NOTICES.md
+    sha256: 52f8cb7cc761ffcdd60702d954308e3abfaefc8b960c1355956d0226b7b6c6c4
+    mode: "0644"
+  - source: third_party/licenses/GPL-3.0-only.txt
+    target: licenses/GPL-3.0-only.txt
+    sha256: 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+    mode: "0644"
+  - source: third_party/licenses/yq-MIT.txt
+    target: licenses/yq-MIT.txt
+    sha256: 697db34dabb21562fe84487a2ccd031fbd45382b89c2cbdec8ef31682c486040
+    mode: "0644"
+  - source: third_party/licenses/zashboard-MIT.txt
+    target: licenses/zashboard-MIT.txt
+    sha256: 43eba9de6e699bf67e44d0bb6f2285e17c13a62a1bd6a9657b0761bd6c9aecb7
+    mode: "0644"
+
+# 完整记录安装包依赖，供发布校验和后续兼容性判断使用。二进制与 UI 仍由各自
+# 的专用更新/发布流程管理，不会由程序更新器直接解压覆盖运行中的组件。
+components:
+  mihomo:
+    version: v1.19.25
+    license: GPL-3.0-only
+    source: https://github.com/MetaCubeX/mihomo/tree/v1.19.25
+    amd64-sha256: 8d14bf2edbf2911db004abaed12754d63041eaf87e565af6f1e589883cd93ec8
+    arm64-sha256: 0d2f19c4bf30121feff4ca51a1a5ddd7837ee1f9faaf930ca83533bca51e8b34
+  yq:
+    version: v4.45.1
+    license: MIT
+    source: https://github.com/mikefarah/yq/tree/v4.45.1
+    amd64-sha256: 290b22a62d0bd3590741557eb6391707a519893d81be975637bc13443140e057
+    arm64-sha256: d49a2cf12a4130a08b6fcbe09163ba3dfdbf6db9ce6b0336d6606ee44505c43d
+  subconverter:
+    version: v0.9.0
+    license: GPL-3.0-only
+    source: https://github.com/tindy2013/subconverter/tree/v0.9.0
+    amd64-sha256: 884a6d1168267eba076fcdd5171215bacf98c17948ab526e4cbbdcad5f7a0217
+    arm64-sha256: 0914688a0af211360271a4eef8a731f09852b47edf094d3758070b660544659e
+  zashboard:
+    version: v2.3.0
+    license: MIT
+    source: https://github.com/Zephyruso/zashboard/tree/v2.3.0
+    sha256: 4f5c8529621e9eda3b4fd6739ced8b9e0430ff776abdda1ea7ea87f1d55a5ae2

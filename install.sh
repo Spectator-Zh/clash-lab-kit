@@ -86,7 +86,7 @@ mkdir -p "$INSTALL_PARENT" || exit 1
 mkdir -m 700 "$INSTALL_STAGE" || exit 1
 _use_install_base "$INSTALL_STAGE"
 
-_get_kernel
+_get_kernel || _error_quit "无法准备 Mihomo 内核"
 _validate_install_resources || _error_quit "当前安装包的 ${MIHOMO_RESOURCE_ARCH} 资源不完整或已损坏"
 mkdir -p "$MIHOMO_BASE_DIR"/{bin,config,logs} || exit 1
 
@@ -117,7 +117,16 @@ _validate_host_binary "$BIN_SUBCONVERTER" || _error_quit "subconverter 与当前
 _okcat '✅' "二进制架构校验通过：${MIHOMO_HOST_ARCH} (${MIHOMO_RESOURCE_ARCH})"
 
 cp -rf "$SCRIPT_BASE_DIR" "$MIHOMO_BASE_DIR/" || exit 1
-cp "$RESOURCES_BASE_DIR"/*.yaml "$MIHOMO_BASE_DIR/" 2>/dev/null || true
+cp "$RESOURCES_CONFIG_MIXIN" "$MIHOMO_CONFIG_MIXIN" || exit 1
+mkdir -p "$MIHOMO_BASE_DIR/licenses" || exit 1
+cp "$SCRIPT_DIR/LICENSE" "$MIHOMO_BASE_DIR/LICENSE" || exit 1
+cp "$SCRIPT_DIR/THIRD_PARTY_NOTICES.md" "$MIHOMO_BASE_DIR/THIRD_PARTY_NOTICES.md" || exit 1
+cp "$SCRIPT_DIR"/third_party/licenses/* "$MIHOMO_BASE_DIR/licenses/" || exit 1
+if [ -f "$RESOURCES_BASE_DIR/app-manifest.yaml" ]; then
+    mkdir -p "$MIHOMO_BASE_DIR/config/templates" || exit 1
+    cp "$RESOURCES_BASE_DIR/app-manifest.yaml" "$MIHOMO_BASE_DIR/config/app-manifest.yaml" || exit 1
+    cp "$RESOURCES_CONFIG_MIXIN" "$MIHOMO_BASE_DIR/config/templates/mixin.yaml" || exit 1
+fi
 cp "$RESOURCES_BASE_DIR"/*.mmdb "$MIHOMO_BASE_DIR/" 2>/dev/null || true
 cp "$RESOURCES_BASE_DIR"/*.dat "$MIHOMO_BASE_DIR/" 2>/dev/null || true
 
@@ -210,5 +219,51 @@ _okcat ''
 _okcat '🏠' "安装目录: $MIHOMO_BASE_DIR"
 _okcat '📁' "配置目录: $MIHOMO_BASE_DIR/config/"
 _okcat '📋' "日志目录: $MIHOMO_BASE_DIR/logs/"
+
+_okcat ''
+_okcat '🚀' '登录自动启动：开启后，该用户每次登录并建立后台用户会话时都会自动启动 Clash。'
+_okcat '  • 关闭命令: clash autostart off'
+if _has_tty; then
+    printf '是否开启登录自动启动? [y/N]: '
+    response=
+    read -r response || response=
+    case "$response" in
+    [yY] | [yY][eE][sS])
+        clashautostart on || _failcat "自动启动设置失败，可稍后执行 clash autostart on 重试"
+        ;;
+    *)
+        _okcat '未开启登录自动启动，可稍后执行 clash autostart on'
+        ;;
+    esac
+else
+    _okcat '非交互安装未开启登录自动启动，可稍后执行 clash autostart on'
+fi
+
+_okcat ''
+case "$(cat "$MIHOMO_CONFIG_URL" 2>/dev/null)" in
+http://* | https://*)
+    _okcat '🔄' '订阅自动更新：开启后，每2天自动更新一次当前订阅配置。'
+    _okcat '  • 关闭命令: clash update auto off'
+    if _has_tty; then
+        printf '是否开启订阅自动更新? [y/N]: '
+        response=
+        read -r response || response=
+        case "$response" in
+        [yY] | [yY][eE][sS])
+            clashupdate auto on || _failcat "订阅自动更新设置失败，可稍后执行 clash update auto on 重试"
+            ;;
+        *)
+            _okcat '未开启订阅自动更新，可稍后执行 clash update auto on'
+            ;;
+        esac
+    else
+        _okcat '非交互安装未开启订阅自动更新，可稍后执行 clash update auto on'
+    fi
+    ;;
+*)
+    _okcat '🔄' '当前使用本地配置，未设置订阅自动更新。设置订阅后可执行 clash update auto on。'
+    _okcat '  • 关闭命令: clash update auto off'
+    ;;
+esac
 
 _quit

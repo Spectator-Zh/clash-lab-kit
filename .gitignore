@@ -24,6 +24,7 @@ Thumbs.db
 .nfs*
 
 # Project specific
+AGENTS.md
 config.yaml
 runtime.yaml
 url

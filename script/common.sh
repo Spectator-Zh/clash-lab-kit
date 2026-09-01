@@ -1,8 +1,11 @@
 # shellcheck disable=SC2148
 # shellcheck disable=SC2034
 # shellcheck disable=SC2155
-[ -n "$BASH_VERSION" ] && set +o noglob
-[ -n "$ZSH_VERSION" ] && setopt glob no_nomatch
+if [ -z "${BASH_VERSION:-}" ]; then
+    printf '%s\n' 'Clash Lab Kit 仅支持 Bash，请在 Bash 中使用。' >&2
+    return 1 2>/dev/null || exit 1
+fi
+set +o noglob
 
 URL_GH_PROXY='https://ghfast.top'
 URL_CLASH_UI="http://board.zash.run.place"
@@ -10,15 +13,29 @@ MIHOMO_REPO='MetaCubeX/mihomo'
 MIHOMO_DEFAULT_VERSION='v1.19.25'
 CLASH_LAB_KIT_REPO='Spectator-Zh/clash-lab-kit'
 CLASH_LAB_KIT_BRANCH='main'
+CLASH_LAB_KIT_BASE_RELEASE='v1.2.0'
 
-SCRIPT_BASE_DIR='./script'
+COMMON_SOURCE_FILE=${BASH_SOURCE[0]:-$0}
+COMMON_SCRIPT_DIR=$(cd -- "$(dirname -- "$COMMON_SOURCE_FILE")" 2>/dev/null && pwd -P)
+COMMON_PROJECT_DIR=$(cd -- "$COMMON_SCRIPT_DIR/.." 2>/dev/null && pwd -P)
 
-RESOURCES_BASE_DIR='./resources'
+MIHOMO_BASE_DIR="$HOME/tools/mihomo"
+SCRIPT_BASE_DIR="${COMMON_PROJECT_DIR}/script"
+
+if [ -d "${COMMON_PROJECT_DIR}/resources" ]; then
+    # Source checkout / release archive.
+    RESOURCES_BASE_DIR="${COMMON_PROJECT_DIR}/resources"
+    ZIP_BASE_DIR="${RESOURCES_BASE_DIR}/zip"
+else
+    # Installed runtime: resources live at the install root and downloads use
+    # a stable user cache instead of the caller's current working directory.
+    RESOURCES_BASE_DIR="$COMMON_PROJECT_DIR"
+    ZIP_BASE_DIR="${MIHOMO_BASE_DIR}/cache"
+fi
 RESOURCES_BIN_DIR="${RESOURCES_BASE_DIR}/bin"
 RESOURCES_CONFIG="${RESOURCES_BASE_DIR}/config.yaml"
 RESOURCES_CONFIG_MIXIN="${RESOURCES_BASE_DIR}/mixin.yaml"
 
-ZIP_BASE_DIR="${RESOURCES_BASE_DIR}/zip"
 ZIP_UI="${ZIP_BASE_DIR}/zashboard.zip"
 
 # Select only resources built for the current host. Globbing here is unsafe:
@@ -56,8 +73,7 @@ aarch64 | arm64)
 esac
 SHA256_UI='4f5c8529621e9eda3b4fd6739ced8b9e0430ff776abdda1ea7ea87f1d55a5ae2'
 
-MIHOMO_BASE_DIR="$HOME/tools/mihomo"
-MIHOMO_SCRIPT_DIR="${MIHOMO_BASE_DIR}/$(basename $SCRIPT_BASE_DIR)"
+MIHOMO_SCRIPT_DIR="${MIHOMO_BASE_DIR}/$(basename "$SCRIPT_BASE_DIR")"
 MIHOMO_CONFIG_URL="${MIHOMO_BASE_DIR}/url"
 MIHOMO_CONFIG_RAW="${MIHOMO_BASE_DIR}/$(basename $RESOURCES_CONFIG)"
 MIHOMO_CONFIG_RAW_BAK="${MIHOMO_CONFIG_RAW}.bak"
@@ -150,27 +166,10 @@ _set_tmpdir_default() {
 }
 
 _set_var() {
-    local user=$USER
     local home=$HOME
 
-    [ -n "$BASH_VERSION" ] && {
-        _SHELL=bash
-    }
-    [ -n "$ZSH_VERSION" ] && {
-        _SHELL=zsh
-    }
-    [ -n "$fish_version" ] && {
-        _SHELL=fish
-    }
-
-    # rc文件路径
-    command -v bash >&/dev/null && {
-        SHELL_RC_BASH="${home}/.bashrc"
-    }
-    command -v zsh >&/dev/null && {
-        SHELL_RC_ZSH="${home}/.zshrc"
-    }
-
+    _SHELL=bash
+    SHELL_RC_BASH="${home}/.bashrc"
 
     MIHOMO_CRON_TAB="user"  # 标记使用用户级crontab
     
@@ -207,29 +206,24 @@ _set_bin
 
 _set_rc() {
     local action=${1:-set}
-    local rc line wrote=0
+    local line legacy_zsh_rc
     line="source $MIHOMO_SCRIPT_DIR/common.sh && source $MIHOMO_SCRIPT_DIR/clashctl.sh && watch_proxy"
+    legacy_zsh_rc="${HOME}/.zshrc"
 
-    for rc in "$SHELL_RC_BASH" "$SHELL_RC_ZSH"; do
-        [ -n "$rc" ] || continue
+    # Remove integration written by older releases that advertised Zsh support.
+    [ -f "$legacy_zsh_rc" ] && sed -i "\|$MIHOMO_SCRIPT_DIR|d" "$legacy_zsh_rc" 2>/dev/null
 
-        if [ "$action" = "unset" ]; then
-            [ -f "$rc" ] && sed -i "\|$MIHOMO_SCRIPT_DIR|d" "$rc" 2>/dev/null
-            continue
-        fi
+    if [ "$action" = "unset" ]; then
+        [ -f "$SHELL_RC_BASH" ] && sed -i "\|$MIHOMO_SCRIPT_DIR|d" "$SHELL_RC_BASH" 2>/dev/null
+        return 0
+    fi
 
-        # Only shells detected by _set_var have a path here. Avoid passing an
-        # empty filename to tee when (for example) zsh is not installed.
-        if [ -e "$rc" ]; then
-            [ -w "$rc" ] || continue
-        elif [ ! -w "$(dirname "$rc")" ]; then
-            continue
-        fi
-        grep -Fqx "$line" "$rc" 2>/dev/null || printf '%s\n' "$line" >> "$rc" || continue
-        wrote=1
-    done
-
-    [ "$action" = "unset" ] || [ "$wrote" -eq 1 ]
+    if [ -e "$SHELL_RC_BASH" ]; then
+        [ -w "$SHELL_RC_BASH" ] || return 1
+    elif [ ! -w "$(dirname "$SHELL_RC_BASH")" ]; then
+        return 1
+    fi
+    grep -Fqx "$line" "$SHELL_RC_BASH" 2>/dev/null || printf '%s\n' "$line" >> "$SHELL_RC_BASH"
 }
 
 # 默认集成、安装mihomo内核
@@ -249,7 +243,7 @@ function _get_kernel() {
     [ -z "$ZIP_KERNEL" ] && {
         local arch=$(uname -m)
         _failcat "${ZIP_BASE_DIR}：未检测到可用的内核压缩包，开始下载默认 mihomo 内核"
-        ZIP_KERNEL=$(_download_mihomo "$arch" "$MIHOMO_DEFAULT_VERSION")
+        ZIP_KERNEL=$(_download_mihomo "$arch" "$MIHOMO_DEFAULT_VERSION") || return 1
         BIN_KERNEL=$BIN_MIHOMO
     }
 
@@ -310,7 +304,7 @@ _get_random_port() {
         # macOS/BSD
         randomPort=$(jot -r 1 1024 65535)
     else
-        # Fallback using RANDOM (bash/zsh)
+        # Fallback using Bash RANDOM
         randomPort=$((RANDOM % 64512 + 1024))
     fi
     
@@ -483,8 +477,8 @@ _is_already_in_use() {
 
 function _valid_env() {
     # 用户空间运行，不需要 root 权限检查。
-    if [ -z "$ZSH_VERSION" ] && [ -z "$BASH_VERSION" ]; then
-        _failcat "仅支持：bash、zsh (例如: bash install.sh)"
+    if [ -z "${BASH_VERSION:-}" ]; then
+        _failcat "仅支持 Bash（例如：bash install.sh）"
         return 1
     fi
     if [ "$(uname -s 2>/dev/null)" != Linux ]; then
@@ -512,12 +506,30 @@ function _valid_config() {
 
     [ "$status" -eq 0 ] || {
         [ "$status" -eq 124 ] && _failcat "配置校验超过 30 秒，已停止等待" || true
-        echo "$msg" | grep -qs "unsupport proxy type" && _error_quit "不支持的代理协议，请安装 mihomo 内核"
+        echo "$msg" | grep -qs "unsupport proxy type" && _failcat "不支持的代理协议，请安装 mihomo 内核"
         [ -n "$msg" ] && printf '%s\n' "$msg" >&2
         return 1
     }
 
     return 0
+}
+
+_edit_yaml_atomic() {
+    local file=$1
+    local expression=$2
+    local staged
+
+    [ -f "$file" ] || return 1
+    staged=$(mktemp "${file}.new.XXXXXX") || return 1
+    cp -p "$file" "$staged" || {
+        rm -f "$staged"
+        return 1
+    }
+    if ! "$BIN_YQ" -i "$expression" "$staged"; then
+        rm -f "$staged"
+        return 1
+    fi
+    mv -f "$staged" "$file"
 }
 
 _prepare_config_data() {
@@ -544,9 +556,9 @@ _prepare_config_data() {
         geosite_tmp="$data_dir/GeoSite.dat.tmp.$$"
         _okcat '⏳' '配置使用 GEOSITE 规则，正在准备 GeoSite.dat...' >&2
 
-        if ! curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 \
+        if ! curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 \
             --output "$geosite_tmp" "${URL_GH_PROXY}/${geosite_url}" &&
-            ! curl --silent --show-error --fail --location --connect-timeout 15 --retry 2 \
+            ! curl --silent --show-error --fail --location --connect-timeout 15 --max-time 60 --retry 2 \
                 --output "$geosite_tmp" "$geosite_url"; then
             rm -f "$geosite_tmp"
             _failcat "GeoSite.dat 下载失败"
@@ -615,7 +627,7 @@ _map_mihomo_arch() {
 _get_latest_mihomo_version() {
     local tag
     tag=$(
-        curl --silent --show-error --fail \
+        curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
             "https://api.github.com/repos/${MIHOMO_REPO}/releases/latest" 2>/dev/null |
             sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
             head -n1
@@ -655,7 +667,8 @@ _download_mihomo() {
     local arch_label version asset_name url proxy_url dest
 
     arch_label=$(_map_mihomo_arch "$arch") || {
-        _error_quit "未知的 mihomo 架构版本：$arch，请手动下载后放到 ${ZIP_BASE_DIR} 目录"
+        _failcat "未知的 mihomo 架构版本：$arch，请手动下载后放到 ${ZIP_BASE_DIR} 目录"
+        return 1
     }
     version=$(_normalize_mihomo_version "$requested_version")
     asset_name=$(_build_mihomo_asset_name "$arch_label" "$version")
@@ -672,6 +685,7 @@ _download_mihomo() {
         --fail \
         --location \
         --connect-timeout 15 \
+        --max-time 180 \
         --retry 2 \
         --output "$dest" \
         "$proxy_url"; then
@@ -686,6 +700,7 @@ _download_mihomo() {
         --fail \
         --location \
         --connect-timeout 15 \
+        --max-time 180 \
         --retry 2 \
         --output "$dest" \
         "$url"; then
@@ -694,7 +709,8 @@ _download_mihomo() {
     fi
 
     rm -f "$dest"
-    _error_quit "下载 mihomo 失败：${url}"
+    _failcat "下载 mihomo 失败：${url}"
+    return 1
 }
 
 _extract_gzip_binary() {
@@ -732,9 +748,15 @@ _replace_installed_mihomo() {
         return 1
     }
 
+    MIHOMO_KERNEL_BACKUP=
     [ -x "$target_bin" ] && {
         backup_bin="${target_bin}.bak.${version_label}.$(date +%Y%m%d%H%M%S)"
-        cp -p "$target_bin" "$backup_bin"
+        cp -p "$target_bin" "$backup_bin" || {
+            rm -f "$staged_bin"
+            _failcat "mihomo 旧内核备份失败"
+            return 1
+        }
+        MIHOMO_KERNEL_BACKUP=$backup_bin
     }
 
     mv -f "$staged_bin" "$target_bin" || {
@@ -745,6 +767,24 @@ _replace_installed_mihomo() {
 
     _set_bin
     return 0
+}
+
+_restore_installed_mihomo() {
+    local backup_bin=$1
+    local target_bin="${MIHOMO_BASE_DIR}/bin/mihomo"
+    local staged_bin="${target_bin}.rollback.$$"
+
+    [ -f "$backup_bin" ] || return 1
+    cp -p "$backup_bin" "$staged_bin" || return 1
+    chmod +x "$staged_bin" || {
+        rm -f "$staged_bin"
+        return 1
+    }
+    mv -f "$staged_bin" "$target_bin" || {
+        rm -f "$staged_bin"
+        return 1
+    }
+    _set_bin
 }
 
 _download_raw_config() {
@@ -876,11 +916,19 @@ _start_convert() {
     }
     local start=$(date +%s)
     # 子shell运行，屏蔽kill时的输出
-    (cd "$BIN_SUBCONVERTER_DIR" && "$BIN_SUBCONVERTER" 2>&1 | tee "$BIN_SUBCONVERTER_LOG" >/dev/null &)
+    (
+        cd "$BIN_SUBCONVERTER_DIR" || exit 1
+        exec 9>&-
+        "$BIN_SUBCONVERTER" 2>&1 | tee "$BIN_SUBCONVERTER_LOG" >/dev/null &
+    )
     while ! _is_bind "$BIN_SUBCONVERTER_PORT" >&/dev/null; do
         sleep 1s
         local now=$(date +%s)
-        [ $((now - start)) -gt 10 ] && _error_quit "订阅转换服务未启动，请检查日志：$BIN_SUBCONVERTER_LOG"
+        if [ $((now - start)) -gt 10 ]; then
+            _failcat "订阅转换服务未启动，请检查日志：$BIN_SUBCONVERTER_LOG"
+            _stop_convert
+            return 1
+        fi
     done
 }
 _stop_convert() {
@@ -927,7 +975,7 @@ start_mihomo() {
     }
     
     # Start mihomo process in background using nohup
-    nohup "$BIN_KERNEL" -d "$MIHOMO_BASE_DIR" -f "$MIHOMO_CONFIG_RUNTIME" \
+    nohup "$BIN_KERNEL" -d "$MIHOMO_BASE_DIR" -f "$MIHOMO_CONFIG_RUNTIME" 9>&- \
         > "$log_file" 2>&1 &
     
     local pid=$!

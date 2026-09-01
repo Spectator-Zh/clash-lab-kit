@@ -15,8 +15,8 @@ assignees: ''
 # 系统信息
 hostnamectl
 
-# 内核状况（若已安装）
-clashstatus -l
+# Clash Lab Kit 状态（若已安装）
+clash status
 ```
 
 **描述 & 复现：**
