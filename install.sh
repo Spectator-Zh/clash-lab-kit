@@ -129,6 +129,10 @@ if [ -f "$RESOURCES_BASE_DIR/app-manifest.yaml" ]; then
 fi
 cp "$RESOURCES_BASE_DIR"/*.mmdb "$MIHOMO_BASE_DIR/" 2>/dev/null || true
 cp "$RESOURCES_BASE_DIR"/*.dat "$MIHOMO_BASE_DIR/" 2>/dev/null || true
+if [ -f "$ZIP_BASE_DIR/geodata-offline.tar.gz" ]; then
+    tar -xzf "$ZIP_BASE_DIR/geodata-offline.tar.gz" --no-same-owner -C "$MIHOMO_BASE_DIR" ||
+        _error_quit "解压离线地理数据失败"
+fi
 
 if ! unzip -q -o "$ZIP_UI" -d "$MIHOMO_BASE_DIR"; then
     _error_quit "解压 UI 文件失败: $ZIP_UI"
@@ -148,8 +152,56 @@ fi
 if ! _prepare_config_data "$MIHOMO_CONFIG_RAW"; then
     _error_quit "配置依赖数据准备失败：$MIHOMO_CONFIG_RAW"
 fi
+
+# Keep the bundled data until the online replacements have passed validation.
+GEODATA_BACKUP="$MIHOMO_BASE_DIR/config/geodata-offline"
+mkdir -p "$GEODATA_BACKUP" || exit 1
+_validate_downloaded_geodata() {
+    local name=$1 candidate=$2 check_dir rule mode=false result
+    check_dir=$(mktemp -d "$MIHOMO_BASE_DIR/.geodata-check.XXXXXX") || return 1
+    case "$name" in
+        GeoSite.dat) rule='GEOSITE,CN,DIRECT' ;;
+        GeoIP.dat) rule='GEOIP,CN,DIRECT'; mode=true ;;
+        ASN.mmdb) rule='IP-ASN,13335,DIRECT' ;;
+        *) rm -rf -- "$check_dir"; return 1 ;;
+    esac
+    cp "$candidate" "$check_dir/$name" || { rm -rf -- "$check_dir"; return 1; }
+    printf 'geodata-mode: %s\ngeox-url:\n  geoip: http://127.0.0.1:1/\n  geosite: http://127.0.0.1:1/\n  asn: http://127.0.0.1:1/\nrules:\n  - %s\n  - MATCH,DIRECT\n' "$mode" "$rule" > "$check_dir/config.yaml"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$BIN_KERNEL" -d "$check_dir" -f "$check_dir/config.yaml" -t >/dev/null 2>&1 && result=0 || result=1
+    else
+        "$BIN_KERNEL" -d "$check_dir" -f "$check_dir/config.yaml" -t >/dev/null 2>&1 && result=0 || result=1
+    fi
+    rm -rf -- "$check_dir"
+    return "$result"
+}
+for geodata_name in GeoSite.dat GeoIP.dat ASN.mmdb; do
+    [ ! -f "$MIHOMO_BASE_DIR/$geodata_name" ] || cp "$MIHOMO_BASE_DIR/$geodata_name" "$GEODATA_BACKUP/$geodata_name" || exit 1
+    case "$geodata_name" in
+        GeoSite.dat) geodata_asset=geosite.dat ;;
+        GeoIP.dat) geodata_asset=geoip.dat ;;
+        ASN.mmdb) geodata_asset=GeoLite2-ASN.mmdb ;;
+    esac
+    geodata_tmp="$MIHOMO_BASE_DIR/$geodata_name.download"
+    if curl --silent --fail --location --connect-timeout 3 --max-time 10 \
+        --output "$geodata_tmp" "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/$geodata_asset" && [ -s "$geodata_tmp" ] &&
+        _validate_downloaded_geodata "$geodata_name" "$geodata_tmp"; then
+        mv "$geodata_tmp" "$MIHOMO_BASE_DIR/$geodata_name" || exit 1
+        _okcat '🌐' "$geodata_name 已获取在线数据"
+    else
+        rm -f "$geodata_tmp"
+        _okcat '📦' "$geodata_name 使用本地数据"
+    fi
+done
+_restore_offline_geodata() {
+    for geodata_name in GeoSite.dat GeoIP.dat ASN.mmdb; do
+        [ ! -f "$GEODATA_BACKUP/$geodata_name" ] || cp "$GEODATA_BACKUP/$geodata_name" "$MIHOMO_BASE_DIR/$geodata_name" || return 1
+    done
+}
 if ! _valid_config "$MIHOMO_CONFIG_RAW"; then
-    _error_quit "配置校验失败：$MIHOMO_CONFIG_RAW；转换日志：$BIN_SUBCONVERTER_LOG"
+    _okcat '📦' '在线地理数据校验失败，尝试使用包内数据'
+    _restore_offline_geodata || exit 1
+    _valid_config "$MIHOMO_CONFIG_RAW" || _error_quit "配置校验失败：$MIHOMO_CONFIG_RAW；转换日志：$BIN_SUBCONVERTER_LOG"
 fi
 
 # Validate the same merged runtime configuration that will be used to start
@@ -160,7 +212,8 @@ if ! "$BIN_YQ" eval-all '. as $item ireduce ({}; . *+ $item) | (.. | select(tag 
     _error_quit "生成运行时配置失败"
 fi
 if ! _valid_config "$MIHOMO_CONFIG_RUNTIME"; then
-    _error_quit "合并后的运行时配置校验失败：$MIHOMO_CONFIG_RUNTIME"
+    _restore_offline_geodata || exit 1
+    _valid_config "$MIHOMO_CONFIG_RUNTIME" || _error_quit "合并后的运行时配置校验失败：$MIHOMO_CONFIG_RUNTIME"
 fi
 _okcat '✅' '配置及依赖数据校验通过'
 

@@ -23,6 +23,12 @@ Zashboard 的构建产物还包含其前端依赖和字体资源；这些内容�
 约束。依赖的精确版本可在 Zashboard v2.3.0 源码的 `pnpm-lock.yaml` 和
 `package.json` 中查询。本声明不把 Zashboard 的 MIT License 扩展到这些独立依赖。
 
+安装包内置的 GeoSite、GeoIP 和 ASN 数据来自
+<https://github.com/MetaCubeX/meta-rules-dat> 的 release 数据（2026-11-02 获取）。
+该项目的许可证和数据来源见其仓库及 README；数据包括多方维护的规则与数据库，
+各来源的许可和署名要求分别适用。GeoLite2 数据由 MaxMind 创建，详见
+<https://www.maxmind.com/>。
+
 ## GPLv3 对应源码获取
 
 本项目打包的 Mihomo 和 subconverter 二进制与下列官方 Release 资产逐字节一致，
