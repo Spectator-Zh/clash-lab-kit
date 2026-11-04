@@ -1,10 +1,14 @@
 manifest-version: 1
 config-schema-version: 1
-app-version: v1.2.1
+app-version: v1.2.2
 
 # 按新到旧保留当前正式 Release 基线内的全部补丁版本。第一项必须与 app-version
 # 一致；clash update app 会根据已安装版本，仅显示本次跨越的版本条目。
 user-facing-changes:
+  - version: v1.2.2
+    items:
+      - 安装时可自定义安装目录
+      - 还有一些优化
   - version: v1.2.1
     items:
       - 安装时优先获取在线地理数据，无法获取时使用包内数据
@@ -23,11 +27,11 @@ user-facing-changes:
 files:
   - source: script/common.sh
     target: script/common.sh
-    sha256: a340231d44f17df7c0dac9368cb15624f0bad1a468f38dc54b2b1e993ab6e4bb
+    sha256: 1dcdf0fb2e67ee39e8aa3ec66812969f3c2866a28956d60b02be055a678f1776
     mode: "0644"
   - source: script/clashctl.sh
     target: script/clashctl.sh
-    sha256: 7a17e15c9eb5cb7718d1fde06885a690c813af6c199cdc7f770b0b25d7c1837c
+    sha256: 736b7c76ade0c35da7f79d64649801392621f10aae030b78ac8d25d97b6de867
     mode: "0644"
   - source: resources/mixin.yaml
     target: config/templates/mixin.yaml

@@ -93,7 +93,7 @@ _user_service_manages_mihomo() {
 
 _write_autostart_service() {
     mkdir -p "$MIHOMO_SYSTEMD_USER_DIR" || return 1
-    cat > "$MIHOMO_SYSTEMD_SERVICE_PATH" <<'EOF'
+    cat > "$MIHOMO_SYSTEMD_SERVICE_PATH" <<EOF
 [Unit]
 Description=Mihomo user proxy
 Wants=network-online.target
@@ -102,8 +102,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'source "%h/tools/mihomo/script/common.sh" && source "%h/tools/mihomo/script/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash on'
-ExecStop=/bin/bash -c 'source "%h/tools/mihomo/script/common.sh" && source "%h/tools/mihomo/script/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash off'
+ExecStart=/bin/bash -c 'source "${MIHOMO_SCRIPT_DIR}/common.sh" && source "${MIHOMO_SCRIPT_DIR}/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash on'
+ExecStop=/bin/bash -c 'source "${MIHOMO_SCRIPT_DIR}/common.sh" && source "${MIHOMO_SCRIPT_DIR}/clashctl.sh" && MIHOMO_SYSTEMD_RUN=1 clash off'
 TimeoutStartSec=60
 TimeoutStopSec=30
 
@@ -2105,8 +2105,8 @@ Commands:
 
 说明:
     • 用户空间运行，无需 sudo 权限
-    • 配置目录: ~/tools/mihomo/
-    • 日志目录: ~/tools/mihomo/logs/
+    • 配置目录: $MIHOMO_BASE_DIR/
+    • 日志目录: $MIHOMO_BASE_DIR/logs/
     • 进程管理: 基于 PID 文件和 nohup
 
 EOF

@@ -22,7 +22,35 @@ else
     _error_quit "缺少有效配置：请先在仓库根目录放置 config.yaml，或执行 bash install.sh 'https://订阅链接'"
 fi
 
-FINAL_MIHOMO_BASE_DIR="$MIHOMO_BASE_DIR"
+INSTALL_POINTER="$HOME/.config/clash-lab-kit/install-path"
+if [ -e "$INSTALL_POINTER" ]; then
+    _error_quit "已记录安装目录，请先运行 bash uninstall.sh 卸载现有安装"
+fi
+if [ -e "$HOME/tools/mihomo" ]; then
+    _error_quit "检测到默认目录已有安装，请先执行 bash uninstall.sh 卸载"
+fi
+FINAL_MIHOMO_BASE_DIR="$HOME/tools/mihomo"
+if _has_tty; then
+    printf '安装目录（默认 %s，直接回车使用默认目录）: ' "$FINAL_MIHOMO_BASE_DIR"
+    read -r install_choice || _error_quit "未能读取安装目录"
+    [ -z "$install_choice" ] || FINAL_MIHOMO_BASE_DIR=$install_choice
+fi
+case "$FINAL_MIHOMO_BASE_DIR" in
+    '~') FINAL_MIHOMO_BASE_DIR=$HOME ;;
+    '~/'*) FINAL_MIHOMO_BASE_DIR="$HOME/${FINAL_MIHOMO_BASE_DIR:2}" ;;
+esac
+case "$FINAL_MIHOMO_BASE_DIR" in
+    /*) ;;
+    *) _error_quit "安装目录必须是绝对路径或以 ~/ 开头" ;;
+esac
+# Keep shell integration and systemd unit paths unambiguous and safe.
+case "$FINAL_MIHOMO_BASE_DIR" in
+    *[!a-zA-Z0-9_./-]*) _error_quit "安装目录仅支持英文字母、数字、下划线、连字符和斜杠" ;;
+esac
+FINAL_MIHOMO_BASE_DIR=$(realpath -m -- "$FINAL_MIHOMO_BASE_DIR") || _error_quit "无法解析安装目录"
+case "$FINAL_MIHOMO_BASE_DIR" in
+    /|"$HOME") _error_quit "不能将根目录或用户主目录作为安装目录" ;;
+esac
 if [ -e "$FINAL_MIHOMO_BASE_DIR" ]; then
     _error_quit "请先执行卸载脚本,以清除安装路径：$FINAL_MIHOMO_BASE_DIR"
 fi
@@ -62,6 +90,7 @@ _cleanup_install() {
     trap - EXIT INT TERM HUP
 
     if [ "$INSTALL_SUCCEEDED" -ne 1 ]; then
+        rm -f -- "$INSTALL_POINTER"
         if [ "$INSTALL_RC_TOUCHED" -eq 1 ]; then
             _use_install_base "$FINAL_MIHOMO_BASE_DIR"
             _set_rc unset >/dev/null 2>&1 || true
@@ -244,6 +273,8 @@ if ! _set_rc; then
     _error_quit "写入 shell 配置失败；本次安装将自动清理"
 fi
 
+mkdir -p "$(dirname "$INSTALL_POINTER")" || _error_quit "无法记录安装目录"
+printf '%s\n' "$FINAL_MIHOMO_BASE_DIR" > "$INSTALL_POINTER" || _error_quit "无法记录安装目录"
 INSTALL_SUCCEEDED=1
 INSTALL_TRANSACTION_ACTIVE=0
 trap - EXIT INT TERM HUP

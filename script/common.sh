@@ -19,7 +19,11 @@ COMMON_SOURCE_FILE=${BASH_SOURCE[0]:-$0}
 COMMON_SCRIPT_DIR=$(cd -- "$(dirname -- "$COMMON_SOURCE_FILE")" 2>/dev/null && pwd -P)
 COMMON_PROJECT_DIR=$(cd -- "$COMMON_SCRIPT_DIR/.." 2>/dev/null && pwd -P)
 
-MIHOMO_BASE_DIR="$HOME/tools/mihomo"
+if [ -d "${COMMON_PROJECT_DIR}/resources" ]; then
+    MIHOMO_BASE_DIR="${CLASH_INSTALL_DIR:-$HOME/tools/mihomo}"
+else
+    MIHOMO_BASE_DIR="$COMMON_PROJECT_DIR"
+fi
 SCRIPT_BASE_DIR="${COMMON_PROJECT_DIR}/script"
 
 if [ -d "${COMMON_PROJECT_DIR}/resources" ]; then

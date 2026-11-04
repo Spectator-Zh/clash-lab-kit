@@ -2,6 +2,20 @@
 # shellcheck disable=SC1091
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$SCRIPT_DIR" || exit 1
+unset CLASH_INSTALL_DIR
+INSTALL_POINTER="$HOME/.config/clash-lab-kit/install-path"
+if [ -s "$INSTALL_POINTER" ]; then
+    IFS= read -r CLASH_INSTALL_DIR < "$INSTALL_POINTER"
+    case "$CLASH_INSTALL_DIR" in
+        /*) ;;
+        *) printf '%s\n' '安装目录记录无效，已停止卸载。' >&2; exit 1 ;;
+    esac
+    case "$CLASH_INSTALL_DIR" in
+        /|"$HOME"|*[!a-zA-Z0-9_./-]*) printf '%s\n' '安装目录记录无效，已停止卸载。' >&2; exit 1 ;;
+    esac
+    [ "$(realpath -m -- "$CLASH_INSTALL_DIR")" = "$CLASH_INSTALL_DIR" ] || { printf '%s\n' '安装目录记录无效，已停止卸载。' >&2; exit 1; }
+    [ -f "$CLASH_INSTALL_DIR/script/common.sh" ] || { printf '%s\n' '未找到已记录的安装目录，已停止卸载。' >&2; exit 1; }
+fi
 . "${SCRIPT_DIR}/script/common.sh"
 . "${SCRIPT_DIR}/script/clashctl.sh"
 
@@ -35,6 +49,8 @@ rm -rf "$RESOURCES_BIN_DIR"
 
 # 清理 shell 配置
 _set_rc unset
+rm -f -- "$INSTALL_POINTER"
+rmdir -- "$(dirname "$INSTALL_POINTER")" 2>/dev/null || true
 
 _okcat '✨' '已卸载 mihomo 用户空间代理，相关配置已清除'
 _okcat '📝' '注意：请重新加载 shell 配置或重新登录以清除环境变量'

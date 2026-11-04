@@ -90,9 +90,8 @@ bash install.sh
 bash install.sh 'https://your-subscription-url'
 ```
 
-> 默认会安装在`~/tools/mihomo/`目录下
-
-* [ ] TODO: 自定义安装路径
+> 安装时可输入自定义安装目录，直接回车使用默认目录 `~/tools/mihomo/`。
+> 请输入绝对路径或以 `~/` 开头的路径；路径支持英文字母、数字、下划线、连字符和斜杠。非交互安装使用默认目录。
 
 安装过程中会：
 
@@ -113,11 +112,17 @@ bash install.sh 'https://your-subscription-url'
 
 不传订阅链接时，安装器只读取仓库根目录的 `config.yaml`；文件不存在或为空会
 立即退出，不会创建安装目录或下载组件。安装脚本校验成功后会安装到
-`~/tools/mihomo/` 并自动启动。仓库根目录的
+所选目录并自动启动。仓库根目录的
 `config.yaml`、订阅地址、运行配置和缓存文件均被 Git 忽略，不会被提交。
 
-Release 按架构提供两个安装包，均内置地理数据。使用本地配置时，若配置没有
+Release 按架构提供两个安装包，解压后进入 `clash-lab-kit/` 目录，均内置地理数据。使用本地配置时，若配置没有
 额外的远程规则集或代理集，在线数据获取失败后可使用包内数据完成安装。
+
+发布时可从指定正式提交生成双架构安装包：
+
+```bash
+bash tools/package-release.sh <正式提交> vX.Y.Z <输出目录>
+```
 
 ### 验证安装
 
@@ -162,7 +167,7 @@ curl -I https://www.google.com
 - 同一用户的写操作使用 `flock` 互斥，避免人工操作与自动更新同时覆盖配置、
   PID 或备份；状态查询等只读命令不受影响。
 - Mihomo 新内核替换后如果重启失败，会自动恢复旧内核并再次启动。
-- 安装后从任意目录执行更新，下载缓存都固定使用 `~/tools/mihomo/cache/`；程序
+- 安装后从任意目录执行更新，下载缓存都使用安装目录下的 `cache/`；程序
   和内核更新增加总超时，网络不通时能够正常失败和回退。
 
 ### 2026-08-27：双架构与订阅兼容性
@@ -449,7 +454,7 @@ clash tun on
 
 **Mixin 配置说明**：
 
-Mixin 配置文件（`~/tools/mihomo/mixin.yaml`）用于自定义代理行为，支持以下配置：
+Mixin 配置文件（安装目录下的 `mixin.yaml`）用于自定义代理行为，支持以下配置：
 
 - `mode`：代理模式（rule/global/direct），默认为 rule 模式
 - `allow-lan`：局域网访问控制
@@ -480,7 +485,7 @@ clash-lab-kit/
 ### 安装后目录结构
 
 ```
-~/tools/mihomo/             # 用户安装目录
+~/tools/mihomo/             # 默认用户安装目录
 ├── bin/                    # 二进制文件
 │   ├── mihomo              # 主程序
 │   ├── subconverter        # 订阅转换工具
@@ -523,7 +528,7 @@ A: 使用 `clash subscribe new-url` 命令更换，系统会自动更新配置�
 
 ### Q: 可以只升级内核，不动其他配置吗？
 
-A: 可以。执行 `clash mihomo update` 即可只替换 `~/tools/mihomo/bin/mihomo`，保留现有配置、订阅和运行目录结构。
+A: 可以。执行 `clash mihomo update` 即可只替换安装目录下的 `bin/mihomo`，保留现有配置、订阅和运行目录结构。
 更新器会自动选择当前架构；传入 `--url` 时也会在替换前拒绝错误架构的内核。
 
 ### Q: Web 控制台无法访问怎么办？
